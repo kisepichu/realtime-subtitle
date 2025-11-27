@@ -35,10 +35,15 @@ class SonioxSession:
         self.audio_streamer: Optional[AudioStreamer] = None
         self.audio_lock = threading.Lock()
     
-    def start(self, api_key: str, audio_format: str, translation: str, loop: asyncio.AbstractEventLoop):
+    def start(self, api_key: Optional[str], audio_format: str, translation: str, loop: asyncio.AbstractEventLoop):
         """启动新的Soniox会话"""
         if self.thread and self.thread.is_alive():
             print("⚠️  Soniox session already running, start request ignored")
+            return False
+
+        if not api_key:
+            print("❌ Cannot start Soniox session: API key is missing.")
+            self.api_key = None # Clear any previous invalid key
             return False
 
         self.last_sent_count = 0
@@ -188,6 +193,17 @@ class SonioxSession:
     
     def _run_session(self, api_key: str, audio_format: str, translation: str, loop: asyncio.AbstractEventLoop):
         """运行Soniox会话（内部方法）"""
+        if not api_key:
+            print("❌ _run_session called without API key. Exiting session thread.")
+            asyncio.run_coroutine_threadsafe(
+                self.broadcast_callback({
+                    "type": "error",
+                    "message": "Soniox API key is missing. Please set it in .env file."
+                }),
+                loop
+            )
+            return
+
         config = get_config(api_key, audio_format, translation)
 
         print("Connecting to Soniox...")

@@ -285,44 +285,38 @@ if (audioSourceButton) {
     });
 }
 
-// 机制 A：浏览器关闭 -> 通知服务器
-// 使用 navigator.sendBeacon 在页面卸载时可靠地通知服务器
-window.addEventListener('unload', function() {
-    navigator.sendBeacon('/shutdown', '');
-});
 
-// 机制 B：服务器关闭 -> 浏览器关闭
-// 定期检查服务器健康状态
-(function pollServer() {
-    fetch('/health')
-        .then(response => {
-            if (!response.ok) {
-                // 服务器响应异常
-                console.log("Server status abnormal, closing window.");
-                window.close();
-            } else {
-                // 服务器正常，3秒后再次检查
-                setTimeout(pollServer, 3000);
-            }
-        })
-        .catch(error => {
-            // fetch 失败表示服务器已停止（例如用户按了 Ctrl+C）
-            console.log("Cannot connect to server, closing window.");
-            
-            // 显示提示信息
-            subtitleContainer.innerHTML = `
-                <div style="text-align: center; padding: 60px 20px; color: #6b7280;">
-                    <h2 style="font-size: 1.5em; margin-bottom: 20px;">⚠️ Server Closed</h2>
-                    <p style="font-size: 1.1em;">Window will close shortly</p>
-                </div>
-            `;
-            
-            // 自动关闭窗口
-            setTimeout(() => {
-                window.close();
-            }, 1000);
-        });
-})();
+
+
+function displayErrorMessage(message) {
+    subtitleContainer.innerHTML = `
+        <div class="error-message-overlay">
+            <h2 class="error-title">Error</h2>
+            <p class="error-text">${escapeHtml(message)}</p>
+            <p class="error-suggestion">Please set your SONIOX_API_KEY environment variable or check your network connection.</p>
+        </div>
+    `;
+    subtitleContainer.scrollTop = 0; // Ensure error is visible
+}
+
+async function fetchApiKeyStatus() {
+    try {
+        const response = await fetch('/api-key-status');
+        if (!response.ok) {
+            console.error('Failed to fetch API key status:', response.statusText);
+            return;
+        }
+        const data = await response.json();
+        if (data.status === 'error' && data.message) {
+            displayErrorMessage(data.message);
+        }
+    } catch (error) {
+        console.error('Error fetching API key status:', error);
+        // Do not display a generic network error here, as it might be a temporary server startup issue.
+        // The WebSocket connection will eventually show the error if the API key is truly missing.
+    }
+}
+
 
 function connect() {
     ws = new WebSocket(`ws://${window.location.host}/ws`);
@@ -354,6 +348,10 @@ function connect() {
 }
 
 function handleMessage(data) {
+    if (data.type === 'error') {
+        displayErrorMessage(data.message);
+        return;
+    }
     if (data.type === 'clear') {
         // 清空所有数据
         console.log('Clearing all subtitles...');
@@ -1001,7 +999,7 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-fetchInitialAudioSource();
-
-// 初始化连接
-connect();
+document.addEventListener('DOMContentLoaded', () => {
+    fetchApiKeyStatus();
+    connect();
+});

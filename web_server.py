@@ -7,7 +7,7 @@ import os
 from aiohttp import web
 from aiohttp import WSMsgType
 
-from config import get_resource_path, AUTO_OPEN_BROWSER
+from config import get_resource_path
 
 
 class WebServer:
@@ -18,6 +18,12 @@ class WebServer:
         self.logger = logger
         self.websocket_clients = set()
         self.app_runner = None
+        self.api_key_error_message = None # 新增属性
+
+    async def api_key_status_handler(self, request):
+        """返回API Key状态"""
+        status = "ok" if self.api_key_error_message is None else "error"
+        return web.json_response({"status": status, "message": self.api_key_error_message})
     
     async def broadcast_to_clients(self, data: dict):
         """向所有连接的客户端广播数据"""
@@ -174,22 +180,6 @@ class WebServer:
         }
         return web.json_response(response, status=status_code)
     
-    async def shutdown_handler(self, request):
-        """关闭服务器端点 - 由浏览器的 unload 事件触发"""
-        if AUTO_OPEN_BROWSER:
-            print("\n[Server] Received browser close signal, shutting down...")
-            # 在后台关闭服务器
-            asyncio.create_task(self._shutdown_server())
-        return web.Response(text="Server is shutting down...")
-    
-    async def _shutdown_server(self):
-        """关闭服务器"""
-        await asyncio.sleep(0.5)  # 短暂延迟以确保响应被发送
-        if self.app_runner:
-            await self.app_runner.cleanup()
-        # 强制退出
-        os._exit(0)
-    
     async def index_handler(self, request):
         """静态文件处理"""
         index_path = get_resource_path(os.path.join('static', 'index.html'))
@@ -204,12 +194,12 @@ class WebServer:
         app.router.add_get('/', self.index_handler)
         app.router.add_get('/ws', self.websocket_handler)
         app.router.add_get('/health', self.health_handler)
+        app.router.add_get('/api-key-status', self.api_key_status_handler) # 新增路由
         app.router.add_post('/restart', self.restart_handler)
         app.router.add_post('/pause', self.pause_handler)
         app.router.add_post('/resume', self.resume_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
-        app.router.add_post('/shutdown', self.shutdown_handler)
         
         # 静态文件服务 - 放在最后以避免覆盖API路由
         # 将 static 目录下的文件映射到根路径

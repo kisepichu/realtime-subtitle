@@ -1,0 +1,69 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # 允许手动触发
+
+permissions:
+  contents: write  # 允许创建 release 和推送 tag
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: Build executable with PyInstaller
+      run: |
+        python build_exe.py
+    
+    - name: Get commit info
+      id: commit_info
+      run: |
+        $commitSha = "${{ github.sha }}".Substring(0, 7)
+        $commitMsg = git log -1 --pretty=%B
+        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $tag = "v$timestamp-$commitSha"
+        echo "sha=$commitSha" >> $env:GITHUB_OUTPUT
+        echo "message=$commitMsg" >> $env:GITHUB_OUTPUT
+        echo "timestamp=$timestamp" >> $env:GITHUB_OUTPUT
+        echo "tag=$tag" >> $env:GITHUB_OUTPUT
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.commit_info.outputs.tag }}
+        name: RealtimeSubtitle ${{ steps.commit_info.outputs.tag }}
+        body: |
+          ## 自动构建版本
+          
+          **提交信息**: ${{ steps.commit_info.outputs.message }}
+          **提交 SHA**: ${{ steps.commit_info.outputs.sha }}
+          **构建时间**: ${{ steps.commit_info.outputs.timestamp }}
+        files: ./dist/RealtimeSubtitle.exe
+        draft: false
+        prerelease: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: RealtimeSubtitle
+        path: ./dist/RealtimeSubtitle.exe
+        retention-days: 30

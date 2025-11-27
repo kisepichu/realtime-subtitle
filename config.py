@@ -27,7 +27,7 @@ TARGET_LANG_2 = "zh"
 # 自动打开浏览器
 # True: 启动服务器后自动在浏览器中打开前端
 # False: 需要手动打开浏览器
-AUTO_OPEN_BROWSER = True
+# AUTO_OPEN_BROWSER = True
 
 # 服务器配置
 # SERVER_PORT 设置为 0 时将自动选择一个空闲端口
