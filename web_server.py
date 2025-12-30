@@ -9,6 +9,7 @@ from aiohttp import web
 from aiohttp import WSMsgType
 
 from config import get_resource_path, LOCK_MANUAL_CONTROLS
+from audio_capture import get_audio_devices
 
 # 日语假名注音支持
 try:
@@ -324,6 +325,80 @@ class WebServer:
         
         html = add_furigana(text)
         return web.json_response({"status": "ok", "html": html})
+
+    async def get_audio_devices_handler(self, request):
+        """获取所有可用的音频设备列表"""
+        devices = get_audio_devices()
+        return web.json_response({
+            "status": "ok",
+            "devices": devices
+        })
+
+    async def get_audio_device_settings_handler(self, request):
+        """获取当前音频设备设置"""
+        return web.json_response({
+            "status": "ok",
+            "input_device_id": self.soniox_session.get_input_device(),
+            "output_device_id": self.soniox_session.get_output_device()
+        })
+
+    async def set_input_device_handler(self, request):
+        """设置输入设备（麦克风）"""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Audio device switching is disabled by server config"},
+                status=403
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        device_id = payload.get("device_id")
+        if device_id is not None and not isinstance(device_id, str):
+            return web.json_response({"status": "error", "message": "'device_id' must be a string or null"}, status=400)
+
+        # 空文字列をNoneに変換
+        if device_id == "":
+            device_id = None
+
+        success, message = self.soniox_session.set_input_device(device_id)
+        status_code = 200 if success else 400
+        return web.json_response({
+            "status": "ok" if success else "error",
+            "message": message,
+            "input_device_id": self.soniox_session.get_input_device()
+        }, status=status_code)
+
+    async def set_output_device_handler(self, request):
+        """设置输出设备（扬声器，用于系统音频捕获）"""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Audio device switching is disabled by server config"},
+                status=403
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        device_id = payload.get("device_id")
+        if device_id is not None and not isinstance(device_id, str):
+            return web.json_response({"status": "error", "message": "'device_id' must be a string or null"}, status=400)
+
+        # 空文字列をNoneに変換
+        if device_id == "":
+            device_id = None
+
+        success, message = self.soniox_session.set_output_device(device_id)
+        status_code = 200 if success else 400
+        return web.json_response({
+            "status": "ok" if success else "error",
+            "message": message,
+            "output_device_id": self.soniox_session.get_output_device()
+        }, status=status_code)
     
     async def index_handler(self, request):
         """静态文件处理"""
@@ -356,6 +431,10 @@ class WebServer:
         app.router.add_post('/osc-translation', self.osc_translation_set_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
+        app.router.add_get('/audio-devices', self.get_audio_devices_handler)
+        app.router.add_get('/audio-device-settings', self.get_audio_device_settings_handler)
+        app.router.add_post('/audio-device-input', self.set_input_device_handler)
+        app.router.add_post('/audio-device-output', self.set_output_device_handler)
         app.router.add_post('/furigana', self.furigana_handler)
         
         # 静态文件服务 - 放在最后以避免覆盖API路由

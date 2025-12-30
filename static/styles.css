@@ -415,3 +415,103 @@ body.dark-theme ruby rt {
         line-height: 1.1;
     }
 }
+
+/* オーディオデバイス選択ポップオーバー */
+.device-popover {
+    position: fixed;
+    z-index: 9999;
+    min-width: 280px;
+    max-width: 360px;
+    max-height: 480px;
+    overflow: auto;
+    padding: 12px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.98);
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.15);
+}
+
+body.dark-theme .device-popover {
+    background: rgba(30, 30, 46, 0.98);
+    border-color: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+}
+
+.device-popover::before {
+    content: "";
+    position: absolute;
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-width: 8px 10px 8px 0;
+    border-color: transparent rgba(255, 255, 255, 0.98) transparent transparent;
+    left: -10px;
+    top: 14px;
+}
+
+body.dark-theme .device-popover::before {
+    border-color: transparent rgba(30, 30, 46, 0.98) transparent transparent;
+}
+
+.device-section {
+    margin-bottom: 16px;
+}
+
+.device-section:last-child {
+    margin-bottom: 0;
+}
+
+.device-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #6b7280;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+body.dark-theme .device-section-title {
+    color: #9ca3af;
+}
+
+.device-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.device-option {
+    width: 100%;
+    text-align: left;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 14px;
+    color: #111827;
+    transition: all 0.2s ease;
+}
+
+body.dark-theme .device-option {
+    color: #e5e7eb;
+}
+
+.device-option:hover {
+    background: rgba(0, 0, 0, 0.06);
+}
+
+body.dark-theme .device-option:hover {
+    background: rgba(255, 255, 255, 0.10);
+}
+
+.device-option.selected {
+    background: rgba(59, 130, 246, 0.15);
+    color: #3b82f6;
+    font-weight: 600;
+}
+
+body.dark-theme .device-option.selected {
+    background: rgba(96, 165, 250, 0.2);
+    color: #60a5fa;
+}

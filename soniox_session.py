@@ -42,6 +42,8 @@ class SonioxSession:
         self.audio_source = "twitch" if USE_TWITCH_AUDIO_STREAM else "system"
         self.audio_streamer: Optional[object] = None
         self.audio_lock = threading.Lock()
+        self.input_device_id: Optional[str] = None  # 入力デバイスID
+        self.output_device_id: Optional[str] = None  # 出力デバイスID
         self.osc_translation_enabled = False
         self._osc_buffer_lock = threading.Lock()
         self._osc_translation_tokens: list[dict] = []
@@ -242,6 +244,54 @@ class SonioxSession:
 
         return True, f"Audio source saved as '{source}'. The change will apply when a session is active."
 
+    def set_input_device(self, device_id: Optional[str]) -> Tuple[bool, str]:
+        """设置输入设备ID（麦克风）"""
+        with self.audio_lock:
+            self.input_device_id = device_id
+            streamer = self.audio_streamer
+
+        if streamer:
+            try:
+                streamer.set_input_device(device_id)
+                device_name = device_id if device_id else "default"
+                print(f"🎤 Input device set to: {device_name}")
+                return True, f"Input device set to '{device_name}'."
+            except Exception as error:
+                return False, str(error)
+
+        device_name = device_id if device_id else "default"
+        print(f"🎤 Input device set to: {device_name} (will apply on next session)")
+        return True, f"Input device saved as '{device_name}'. The change will apply when a session is active."
+
+    def set_output_device(self, device_id: Optional[str]) -> Tuple[bool, str]:
+        """设置输出设备ID（扬声器，用于系统音频捕获）"""
+        with self.audio_lock:
+            self.output_device_id = device_id
+            streamer = self.audio_streamer
+
+        if streamer:
+            try:
+                streamer.set_output_device(device_id)
+                device_name = device_id if device_id else "default"
+                print(f"🔊 Output device set to: {device_name}")
+                return True, f"Output device set to '{device_name}'."
+            except Exception as error:
+                return False, str(error)
+
+        device_name = device_id if device_id else "default"
+        print(f"🔊 Output device set to: {device_name} (will apply on next session)")
+        return True, f"Output device saved as '{device_name}'. The change will apply when a session is active."
+
+    def get_input_device(self) -> Optional[str]:
+        """获取当前输入设备ID"""
+        with self.audio_lock:
+            return self.input_device_id
+
+    def get_output_device(self) -> Optional[str]:
+        """获取当前输出设备ID"""
+        with self.audio_lock:
+            return self.output_device_id
+
     def _start_audio_streamer(self, ws) -> None:
         with self.audio_lock:
             existing_streamer = self.audio_streamer
@@ -266,7 +316,9 @@ class SonioxSession:
                 ws,
                 initial_source=self.get_audio_source(),
                 sample_rate=self.sample_rate,
-                chunk_size=self.chunk_size
+                chunk_size=self.chunk_size,
+                input_device_id=self.input_device_id,
+                output_device_id=self.output_device_id
             )
 
         with self.audio_lock:
