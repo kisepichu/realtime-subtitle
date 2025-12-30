@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 MAX_LENGTH = 144
 
 # 翻译头部行（None 或空字符串表示禁用）
-TRANSLATION_HEADER = ""
+TRANSLATION_HEADER = "翻译："
 
 # 消息优先级
 PRIORITY_HIGH = 1  # 最终确认的消息
