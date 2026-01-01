@@ -127,6 +127,17 @@ SERVER_PORT = _env_int("SERVER_PORT", 8080)
 EXTERNAL_WS_URI = _env_str("EXTERNAL_WS_URI", "ws://localhost:9039")
 
 
+# 外部WebSocket non-final配信レート制御
+# non-finalトークンの配信頻度を制御（Nトークンに1回配信）
+# デフォルト: 3（3トークンに1回配信）
+# final確定時は必ず配信される
+EXTERNAL_WS_NON_FINAL_SEND_INTERVAL = _env_int("EXTERNAL_WS_NON_FINAL_SEND_INTERVAL", 3)
+# ダミークライアント自動接続
+# True: 外部WebSocketサーバーにダミークライアントを自動接続（WebSocket配信の問題を回避）
+# False: ダミークライアントを接続しない
+EXTERNAL_WS_AUTO_DUMMY_CLIENT = _env_bool("EXTERNAL_WS_AUTO_DUMMY_CLIENT", True)
+
+
 def get_resource_path(relative_path):
     """获取资源文件的绝对路径，兼容开发环境和PyInstaller打包后的环境"""
     if hasattr(sys, '_MEIPASS'):

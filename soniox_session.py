@@ -15,6 +15,7 @@ from config import (
     TWITCH_CHANNEL,
     TWITCH_STREAM_QUALITY,
     FFMPEG_PATH,
+    EXTERNAL_WS_NON_FINAL_SEND_INTERVAL,
 )
 from soniox_client import get_config
 from audio_capture import AudioStreamer
@@ -52,6 +53,11 @@ class SonioxSession:
         self._external_ws_tokens: list[dict] = []  # Final tokens
         self._external_ws_non_final_tokens: list[dict] = []  # Non-final tokens (青文字)
         self._external_ws_word_count = 0
+        self._external_ws_non_final_token_count = 0
+        self.external_ws_non_final_send_interval = EXTERNAL_WS_NON_FINAL_SEND_INTERVAL
+        # Track the last flush state to detect new additions
+        self._external_ws_last_flush_final_text = ""  # Last flushed final tokens text
+        self._external_ws_last_flush_non_final_text = ""  # Last flushed non-final tokens text
 
         try:
             from config import TRANSLATION_TARGET_LANG
@@ -150,6 +156,9 @@ class SonioxSession:
         with self._external_ws_buffer_lock:
             self._external_ws_tokens.clear()
             self._external_ws_word_count = 0
+            self._external_ws_non_final_token_count = 0
+            self._external_ws_last_flush_final_text = ""
+            self._external_ws_last_flush_non_final_text = ""
     
     def resume(self, api_key: Optional[str] = None, audio_format: Optional[str] = None,
                translation: Optional[str] = None, loop: Optional[asyncio.AbstractEventLoop] = None,
@@ -427,10 +436,18 @@ class SonioxSession:
             if not all_tokens:
                 return
             
+            # Save current state before clearing (for detecting new additions)
+            final_text = "".join([tok.get("text", "") for tok in self._external_ws_tokens])
+            non_final_text = "".join([tok.get("text", "") for tok in self._external_ws_non_final_tokens])
+            
             # Clear final tokens (non-final tokens are kept for next update)
             self._external_ws_tokens.clear()
             self._external_ws_word_count = 0
             # Note: non-final tokens are kept, they will be replaced on next update
+            
+            # Update last flush state
+            self._external_ws_last_flush_final_text = final_text
+            self._external_ws_last_flush_non_final_text = non_final_text
         
         # Convert tokens to text using the same method as OSC
         text = "".join([tok.get("text", "") for tok in all_tokens]).strip()
@@ -451,15 +468,26 @@ class SonioxSession:
         if not hasattr(self, 'external_ws_send_callback') or not self.external_ws_send_callback:
             return
         
+        # Process all final tokens first, then flush once at the end
+        has_end_token = False
+        
+        with self._external_ws_buffer_lock:
+            # Clear non-final tokens when final tokens are added
+            # This prevents the same text from being sent twice (once as final, once as non-final)
+            self._external_ws_non_final_tokens.clear()
+            # final確定時はカウンターをリセット
+            self._external_ws_non_final_token_count = 0
+        
+        # Process all final tokens and add them to buffer
         for token in final_tokens:
             if not token.get("is_final"):
                 continue
             
             text = token.get("text") or ""
             
-            # Skip <end> tokens (they trigger flush but shouldn't be added)
+            # Check for <end> token (triggers immediate flush)
             if text == "<end>":
-                self._flush_external_ws_segment()
+                has_end_token = True
                 continue
             
             # Process original transcription tokens (not translations)
@@ -467,18 +495,40 @@ class SonioxSession:
             # We want to send the original transcript, not the translation
             translation_status = token.get("translation_status")
             if translation_status != "translation" and text:
-                # When a token becomes final, clear non-final tokens to prevent duplication
-                # This is because final tokens represent confirmed text, and non-final tokens
-                # may contain overlapping or duplicate text that was already finalized
                 with self._external_ws_buffer_lock:
-                    # Clear non-final tokens when a final token is added
-                    # This prevents the same text from being sent twice (once as final, once as non-final)
-                    self._external_ws_non_final_tokens.clear()
-                    
                     # Add the final token to buffer
                     word_count = self._count_words(text)
                     self._external_ws_tokens.append(token)
                     self._external_ws_word_count += word_count
+        
+        # Check if we have any tokens to send or <end> token
+        with self._external_ws_buffer_lock:
+            if not self._external_ws_tokens and not has_end_token:
+                # No tokens to send
+                return
+            
+            # 単語数による条件をチェック（word_countをリセットするかどうかの判断に使用）
+            should_reset_word_count = False
+            if self._external_ws_tokens:
+                if self._external_ws_word_count >= 20:
+                    should_reset_word_count = True
+                elif self._external_ws_word_count >= 10:
+                    # カンマが含まれているかチェック
+                    combined_text = "".join([tok.get("text", "") for tok in self._external_ws_tokens])
+                    if ',' in combined_text:
+                        should_reset_word_count = True
+                elif self._external_ws_word_count >= 2:
+                    # ドットが含まれているかチェック
+                    combined_text = "".join([tok.get("text", "") for tok in self._external_ws_tokens])
+                    if '.' in combined_text:
+                        should_reset_word_count = True
+                
+                if should_reset_word_count:
+                    self._external_ws_word_count = 0
+        
+        # final確定時は必ず配信（レート制御によらず）
+        # <end>トークンがある場合、またはfinalトークンがある場合、すべてを一度に送信
+        self._flush_external_ws_segment()
     
     def _handle_external_ws_non_final_tokens(self, non_final_tokens: list[dict]):
         """Handle non-final tokens for external WebSocket sending"""
@@ -497,28 +547,70 @@ class SonioxSession:
         if not filtered_tokens:
             return
         
-        # Update non-final tokens buffer (replace, not append)
+        # Update non-final tokens buffer and increment counter
         with self._external_ws_buffer_lock:
+            # Get previous non-final text for comparison
+            previous_non_final_text = "".join([tok.get("text", "") for tok in self._external_ws_non_final_tokens])
+            
+            # Update non-final tokens buffer
             self._external_ws_non_final_tokens = filtered_tokens
-        
-        # Check if we should flush based on combined final + non-final tokens
-        with self._external_ws_buffer_lock:
+            # non-finalトークンが来るたびにカウンターをインクリメント
+            self._external_ws_non_final_token_count += 1
+            
+            # Get current state
+            current_final_text = "".join([tok.get("text", "") for tok in self._external_ws_tokens])
+            current_non_final_text = "".join([tok.get("text", "") for tok in self._external_ws_non_final_tokens])
+            
+            # Calculate newly added content since last flush
+            # Final tokens: current - last flushed (only newly added final tokens)
+            new_final_text = current_final_text[len(self._external_ws_last_flush_final_text):]
+            # Non-final tokens: check if current is different from last flushed
+            # If different, the new part is current - last flushed (but non-final is replaced entirely)
+            # So we check if current non-final contains new punctuation compared to last flushed
+            if current_non_final_text != self._external_ws_last_flush_non_final_text:
+                # Non-final was updated, check if it has new punctuation
+                # Compare with previous non-final to see if punctuation is new
+                new_non_final_text = current_non_final_text[len(previous_non_final_text):] if previous_non_final_text else current_non_final_text
+            else:
+                new_non_final_text = ""
+            
             # Combine final and non-final tokens for condition checking
             all_tokens = self._external_ws_tokens + self._external_ws_non_final_tokens
             combined_text = "".join([tok.get("text", "") for tok in all_tokens])
             combined_word_count = sum([self._count_words(tok.get("text", "")) for tok in all_tokens])
         
-        # Check conditions with combined tokens
+        # Check conditions
         should_flush = False
+        reset_counter = False
+        
+        # 条件1: 単語数による条件（優先）
+        # カンマやドットは「前回のflush以降に新しく追加された部分」に含まれている場合のみ条件に該当
         if combined_word_count >= 20:
             should_flush = True
-        elif combined_word_count >= 10 and ',' in combined_text:
+            reset_counter = True
+        elif combined_word_count >= 10:
+            # 10単語以上で、新しく追加された部分（finalまたはnon-final）にカンマが含まれている
+            new_combined_text = new_final_text + new_non_final_text
+            if ',' in new_combined_text:
+                should_flush = True
+                reset_counter = True
+        elif combined_word_count >= 2:
+            # 2単語以上で、新しく追加された部分（finalまたはnon-final）にドットが含まれている
+            new_combined_text = new_final_text + new_non_final_text
+            if '.' in new_combined_text:
+                should_flush = True
+                reset_counter = True
+        # 条件2: 配信レート制御（条件1に該当しない場合のみ）
+        # interval回に1回だけ送信（例: interval=3なら3回に1回）
+        if not should_flush and self._external_ws_non_final_token_count >= self.external_ws_non_final_send_interval:
             should_flush = True
-        elif combined_word_count >= 2 and '.' in combined_text:
-            should_flush = True
+            reset_counter = True
         
         # Flush if condition met
         if should_flush:
+            if reset_counter:
+                with self._external_ws_buffer_lock:
+                    self._external_ws_non_final_token_count = 0
             self._flush_external_ws_segment()
     
     def _run_session(

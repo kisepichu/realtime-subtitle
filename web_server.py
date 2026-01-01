@@ -106,32 +106,39 @@ class WebServer:
         
         # Add to external client list
         self.external_websocket_clients.add(ws)
-        print(f"[External WS] Client connected. Total external clients: {len(self.external_websocket_clients)}")
+        client_id = f"{remote_addr}-{id(ws)}"
+        print(f"[External WS] Client connected (id={client_id}, closed={ws.closed}). Total external clients: {len(self.external_websocket_clients)}")
         
         try:
+            message_count = 0
             async for msg in ws:
+                message_count += 1
                 if msg.type == WSMsgType.TEXT:
                     # Handle client messages if needed
-                    print(f"[External WS] Received message from {remote_addr}: {msg.data[:100]}...")
+                    print(f"[External WS] [{client_id}] Received message #{message_count} (length={len(msg.data)}): {msg.data[:100]}...")
                     pass
                 elif msg.type == WSMsgType.ERROR:
-                    print(f'[External WS] Connection closed with exception from {remote_addr}: {ws.exception()}')
+                    print(f'[External WS] [{client_id}] Connection closed with exception: {ws.exception()}')
                     break
                 elif msg.type == WSMsgType.CLOSE:
-                    print(f'[External WS] Received close message from {remote_addr}')
+                    print(f'[External WS] [{client_id}] Received close message')
                     break
+            print(f"[External WS] [{client_id}] Message loop ended (total_messages={message_count}, closed={ws.closed})")
         except Exception as e:
-            print(f"[External WS] Error in connection from {remote_addr}: {e}")
+            print(f"[External WS] [{client_id}] Error in connection: {e} (closed={ws.closed})")
         finally:
             # Remove from client list
+            was_in_set = ws in self.external_websocket_clients
             self.external_websocket_clients.discard(ws)
-            print(f"[External WS] Client disconnected from {remote_addr}. Total external clients: {len(self.external_websocket_clients)}")
+            remaining_count = len(self.external_websocket_clients)
+            print(f"[External WS] [{client_id}] Client disconnected (was_in_set={was_in_set}, closed={ws.closed}). Total external clients: {remaining_count}")
             # Ensure connection is closed
             if not ws.closed:
                 try:
                     await ws.close()
-                except Exception:
-                    pass
+                    print(f"[External WS] [{client_id}] Explicitly closed connection")
+                except Exception as close_err:
+                    print(f"[External WS] [{client_id}] Error closing connection: {close_err}")
         
         return ws
     
@@ -143,6 +150,9 @@ class WebServer:
         
         # Send plain text (not JSON)
         # Send to external WebSocket clients
+        client_count_before = len(self.external_websocket_clients)
+        print(f"[External WS] Attempting to send text (length={len(text)}, clients={client_count_before}): {text[:50]}...")
+        
         if self.external_websocket_clients:
             # Remove disconnected clients
             disconnected_clients = []
@@ -152,41 +162,76 @@ class WebServer:
             
             for client in disconnected_clients:
                 self.external_websocket_clients.discard(client)
-                print(f"[External WS] Removed disconnected client")
+                print(f"[External WS] Removed disconnected client (closed=True)")
             
             if self.external_websocket_clients:
                 client_list = list(self.external_websocket_clients)
+                print(f"[External WS] Sending to {len(client_list)} client(s)")
+                
+                # Track send attempts and results
+                send_start_time = asyncio.get_event_loop().time()
+                
                 # Send to each client individually to prevent one blocking client from affecting others
-                async def send_to_client_safely(client, text_to_send):
+                async def send_to_client_safely(client, text_to_send, client_index):
+                    client_id = f"client-{client_index}"
                     try:
+                        send_start = asyncio.get_event_loop().time()
+                        print(f"[External WS] [{client_id}] Starting send (text_length={len(text_to_send)})")
+                        
                         # Use asyncio.wait_for to add timeout (5 seconds)
                         # This prevents blocking if the client's send buffer is full
                         await asyncio.wait_for(client.send_str(text_to_send), timeout=5.0)
+                        
+                        send_duration = asyncio.get_event_loop().time() - send_start
+                        print(f"[External WS] [{client_id}] Send completed successfully (duration={send_duration:.3f}s)")
+                        return True
                     except asyncio.TimeoutError:
                         # Client's send buffer is full or client is not reading messages
                         # Remove the client to prevent blocking other clients
+                        send_duration = asyncio.get_event_loop().time() - send_start
                         self.external_websocket_clients.discard(client)
-                        print(f"[External WS] Removed client due to send timeout (buffer full or not reading)")
+                        print(f"[External WS] [{client_id}] Send timeout after {send_duration:.3f}s (buffer full or not reading) - client removed")
+                        return False
                     except Exception as e:
+                        send_duration = asyncio.get_event_loop().time() - send_start
                         self.external_websocket_clients.discard(client)
-                        print(f"[External WS] Removed client due to send error: {e}")
+                        print(f"[External WS] [{client_id}] Send error after {send_duration:.3f}s: {e} - client removed")
+                        return False
                 
                 # Create tasks for each client but don't await them all
                 # This ensures that if one client blocks, others can still receive messages
                 # The event loop will process tasks as they become ready
                 tasks = []
-                for client in client_list:
-                    task = asyncio.create_task(send_to_client_safely(client, text))
+                for idx, client in enumerate(client_list):
+                    task = asyncio.create_task(send_to_client_safely(client, text, idx))
                     tasks.append(task)
                 
                 # Wait for at least one task to complete or timeout
                 # This ensures the event loop processes the sends even if there's only one client
                 if tasks:
+                    print(f"[External WS] Waiting for at least one send to complete (timeout=0.1s)")
                     # Use asyncio.wait to wait for at least one task to complete
                     # This ensures the event loop processes the sends
                     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=0.1)
+                    
+                    total_duration = asyncio.get_event_loop().time() - send_start_time
+                    print(f"[External WS] After wait: {len(done)} completed, {len(pending)} pending (total_duration={total_duration:.3f}s)")
+                    
+                    # Check results of completed tasks
+                    for task in done:
+                        try:
+                            result = task.result()
+                            if result:
+                                print(f"[External WS] At least one send completed successfully")
+                        except Exception as e:
+                            print(f"[External WS] Task completed with exception: {e}")
+                    
                     # Let remaining tasks continue in the background
                     # They will complete when the client reads the messages
+                    if pending:
+                        print(f"[External WS] {len(pending)} send task(s) continuing in background")
+                else:
+                    print(f"[External WS] No tasks created (unexpected)")
             else:
                 print(f"[External WS] No active clients after cleanup")
         else:
