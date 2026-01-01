@@ -113,7 +113,7 @@ def main():
     args, _unknown = parse_cli_args(sys.argv[1:])
     apply_cli_overrides_to_env(args)
 
-    from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW
+    from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW, EXTERNAL_WS_URI
     from logger import TranscriptLogger
     from soniox_session import SonioxSession
     from web_server import WebServer
@@ -137,6 +137,18 @@ def main():
     # 创建Web服务器
     web_server = WebServer(soniox_session, logger)
     
+    # Set external WebSocket send callback
+    async def external_ws_send_callback(text: str):
+        if web_server:
+            try:
+                await web_server.send_to_external_clients(text)
+            except Exception as e:
+                print(f"[External WS] Error in send callback: {e}")
+        else:
+            print(f"[External WS] Send callback: web_server is None")
+    
+    soniox_session.external_ws_send_callback = external_ws_send_callback
+    
     # 设置信号处理，优雅退出
     def signal_handler(sig, frame):
         print("\n👋 Received termination signal, shutting down server...")
@@ -148,6 +160,9 @@ def main():
     
     # 创建应用
     app = web_server.create_app()
+    
+    # 创建外部WebSocket应用
+    external_ws_app = web_server.create_external_ws_app()
     
     # 启动后台任务
     async def start_background_tasks(app_instance):
@@ -209,12 +224,27 @@ def main():
     server_url = f"http://{resolve_display_host()}:{actual_port}"
     print(f"🚀 Server starting on {bind_host}:{actual_port}")
 
+    # Parse external WebSocket URI from config
+    from urllib.parse import urlparse
+    parsed_uri = urlparse(EXTERNAL_WS_URI)
+    external_ws_host = parsed_uri.hostname or "127.0.0.1"
+    external_ws_port = parsed_uri.port or 9039
+    external_ws_socket, external_ws_actual_port = create_listening_socket(external_ws_host, external_ws_port)
+    if external_ws_port != external_ws_actual_port:
+        print(f"⚠️  External WS port {external_ws_port} unavailable, switched to {external_ws_actual_port}")
+    print(f"🔌 External WebSocket server starting on {external_ws_host}:{external_ws_actual_port}")
+
     debug = bool(args.debug)
 
     # 在新线程中启动 aiohttp 服务器
     server_thread = threading.Thread(target=run_server, args=(app, listener_socket))
     server_thread.daemon = True
     server_thread.start()
+    
+    # 在新线程中启动外部WebSocket服务器
+    external_ws_thread = threading.Thread(target=run_server, args=(external_ws_app, external_ws_socket))
+    external_ws_thread.daemon = True
+    external_ws_thread.start()
 
     if AUTO_OPEN_WEBVIEW:
         try:

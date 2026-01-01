@@ -1,12 +1,21 @@
 """音频捕获模块 - 处理本机/网络音频的录制和流式传输"""
 import threading
 import time
+import warnings
 from typing import Optional, List, Dict
 
 import numpy as np
 
+# Suppress SoundcardRuntimeWarning about data discontinuity
 try:
     import soundcard as sc
+    # Try to import SoundcardRuntimeWarning from soundcard
+    try:
+        from soundcard import SoundcardRuntimeWarning
+        warnings.filterwarnings("ignore", category=SoundcardRuntimeWarning)
+    except ImportError:
+        # If direct import fails, try to filter by message pattern
+        warnings.filterwarnings("ignore", message=".*data discontinuity.*")
 except ImportError:
     sc = None
 

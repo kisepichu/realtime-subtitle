@@ -47,6 +47,10 @@ class SonioxSession:
         self.osc_translation_enabled = False
         self._osc_buffer_lock = threading.Lock()
         self._osc_translation_tokens: list[dict] = []
+        # External WebSocket text buffer
+        self._external_ws_buffer_lock = threading.Lock()
+        self._external_ws_tokens: list[dict] = []
+        self._external_ws_word_count = 0
 
         try:
             from config import TRANSLATION_TARGET_LANG
@@ -82,6 +86,7 @@ class SonioxSession:
         if translation_target_lang is not None:
             self.set_translation_target_lang(translation_target_lang)
         self._reset_osc_buffer()
+        self._reset_external_ws_buffer()
         osc_manager.clear_history()
         
         # 初始化日志文件（如果还没有创建）
@@ -139,6 +144,11 @@ class SonioxSession:
     def _reset_osc_buffer(self):
         with self._osc_buffer_lock:
             self._osc_translation_tokens.clear()
+    
+    def _reset_external_ws_buffer(self):
+        with self._external_ws_buffer_lock:
+            self._external_ws_tokens.clear()
+            self._external_ws_word_count = 0
     
     def resume(self, api_key: Optional[str] = None, audio_format: Optional[str] = None,
                translation: Optional[str] = None, loop: Optional[asyncio.AbstractEventLoop] = None,
@@ -205,6 +215,7 @@ class SonioxSession:
         if self.thread is None:
             self.stop_event = None
             self._reset_osc_buffer()
+            self._reset_external_ws_buffer()
             osc_manager.clear_history()
 
     def get_audio_source(self) -> str:
@@ -374,6 +385,105 @@ class SonioxSession:
                 with self._osc_buffer_lock:
                     self._osc_translation_tokens.append(token)
     
+    def _count_words(self, text: str) -> int:
+        """Count words in text (simple whitespace-based)"""
+        if not text:
+            return 0
+        return len(text.split())
+    
+    def _should_flush_external_ws(self, token: dict) -> bool:
+        """Check if external WebSocket buffer should be flushed based on conditions"""
+        text = token.get("text") or ""
+        
+        # Condition 1: Line end (<end> token)
+        if text == "<end>":
+            return True
+        
+        with self._external_ws_buffer_lock:
+            # Count words in current token
+            word_count = self._count_words(text)
+            total_words = self._external_ws_word_count + word_count
+            
+            # Condition 2: 20 words or more
+            if total_words >= 20:
+                return True
+            
+            # Condition 3: 10 words or more and comma appears
+            if total_words >= 10 and ',' in text:
+                return True
+            
+            # Condition 4: 2 words or more and dot appears
+            if total_words >= 2 and '.' in text:
+                return True
+        
+        return False
+    
+    def _flush_external_ws_segment(self):
+        """Flush external WebSocket buffer and send text"""
+        with self._external_ws_buffer_lock:
+            if not self._external_ws_tokens:
+                return
+            
+            tokens = list(self._external_ws_tokens)
+            word_count = self._external_ws_word_count
+            self._external_ws_tokens.clear()
+            self._external_ws_word_count = 0
+        
+        # Convert tokens to text using the same method as OSC
+        text = "".join([tok.get("text", "") for tok in tokens]).strip()
+        
+        if text and self.loop:
+            # Get web_server from broadcast_callback closure or pass it differently
+            # For now, we'll need to access web_server through a different mechanism
+            # Let's add a callback for external WS sending
+            if hasattr(self, 'external_ws_send_callback') and self.external_ws_send_callback:
+                asyncio.run_coroutine_threadsafe(
+                    self.external_ws_send_callback(text),
+                    self.loop
+                )
+    
+    def _handle_external_ws_final_tokens(self, final_tokens: list[dict]):
+        """Handle final tokens for external WebSocket sending"""
+        # Check if external WS is enabled (via callback existence)
+        if not hasattr(self, 'external_ws_send_callback') or not self.external_ws_send_callback:
+            return
+        
+        for token in final_tokens:
+            if not token.get("is_final"):
+                continue
+            
+            text = token.get("text") or ""
+            
+            # Skip <end> tokens (they trigger flush but shouldn't be added)
+            if text == "<end>":
+                self._flush_external_ws_segment()
+                continue
+            
+            # Process original transcription tokens (not translations)
+            # translation_status can be "original", "none", or missing
+            # We want to send the original transcript, not the translation
+            translation_status = token.get("translation_status")
+            if translation_status != "translation" and text:
+                # Add token to buffer first
+                with self._external_ws_buffer_lock:
+                    self._external_ws_tokens.append(token)
+                    word_count = self._count_words(text)
+                    self._external_ws_word_count += word_count
+                    total_words = self._external_ws_word_count
+                
+                # Check if we should flush based on conditions AFTER adding
+                should_flush = False
+                if total_words >= 20:
+                    should_flush = True
+                elif total_words >= 10 and ',' in text:
+                    should_flush = True
+                elif total_words >= 2 and '.' in text:
+                    should_flush = True
+                
+                # Flush if condition met (this will send the accumulated text)
+                if should_flush:
+                    self._flush_external_ws_segment()
+    
     def _run_session(
         self,
         api_key: str,
@@ -443,6 +553,7 @@ class SonioxSession:
 
                         if new_final_tokens:
                             self._handle_osc_final_tokens(new_final_tokens)
+                            self._handle_external_ws_final_tokens(new_final_tokens)
                         
                         # 将新的final tokens写入日志
                         if new_final_tokens and not self.is_paused:

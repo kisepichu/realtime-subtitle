@@ -193,6 +193,11 @@ const pendingFuriganaRequests = new Set();
 // 移动端底部留白开关（默认关闭）
 let bottomSafeAreaEnabled = localStorage.getItem('bottomSafeAreaEnabled') === 'true';
 
+// External WebSocket settings
+let externalWsEnabled = false;
+let externalWsUri = 'ws://localhost:9039';  // Fixed URI, not configurable
+let externalWsCopyToClipboard = false;
+
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
 let isRestarting = false;    // 是否正在重启中
@@ -210,6 +215,7 @@ updateBottomSafeAreaButton();
 applyBottomSafeArea();
 applyLockPauseRestartControlsUI();
 applyStaticUiText();
+fetchExternalWsConfig();
 
 function applyStaticUiText() {
   if (document && document.documentElement) {
@@ -1213,6 +1219,8 @@ function connect() {
 
   ws.onopen = () => {
     console.log('WebSocket connected');
+    // Refresh external WS config when reconnecting
+    fetchExternalWsConfig();
   };
 
   ws.onmessage = (event) => {
@@ -1270,6 +1278,25 @@ function handleMessage(data) {
     console.log('Clearing all subtitles...');
     clearSubtitleState();
     // 不修改UI,因为重启流程会处理
+    return;
+  }
+  if (data.type === 'external_ws_text') {
+    // Handle external WebSocket text for clipboard copy
+    // Use the flag from the message (server's current state)
+    const shouldCopy = data.copy_to_clipboard === true;
+
+    if (data.text && shouldCopy) {
+      // Update local variable to keep it in sync
+      externalWsCopyToClipboard = true;
+      // Copy to clipboard - the function will handle errors
+      copyToClipboard(data.text);
+    } else if (data.text && !shouldCopy) {
+      // Update local variable to keep it in sync
+      externalWsCopyToClipboard = false;
+      console.log('[External WS] Clipboard copy skipped: server flag is false');
+    } else {
+      console.log('[External WS] No text in external_ws_text message');
+    }
     return;
   }
 
@@ -2059,13 +2086,123 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// External WebSocket functions
+async function fetchExternalWsConfig() {
+  try {
+    const response = await fetch('/external-ws-config');
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    if (data) {
+      if (data.uri) {
+        externalWsUri = data.uri;
+      }
+      externalWsCopyToClipboard = !!data.copy_to_clipboard;
+      updateClipboardButton();
+    }
+  } catch (error) {
+    console.error('Error fetching external WS config:', error);
+  }
+}
+
+async function setExternalWsConfig(copyToClipboard) {
+  try {
+    const response = await fetch('/external-ws-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        uri: externalWsUri,
+        copy_to_clipboard: copyToClipboard
+      })
+    });
+
+    if (!response.ok) {
+      console.error('Failed to set external WS config:', response.statusText);
+      return;
+    }
+
+    const data = await response.json();
+    if (data.status === 'ok') {
+      externalWsCopyToClipboard = !!data.copy_to_clipboard;
+      updateClipboardButton();
+      console.log('External WS config updated');
+    }
+  } catch (error) {
+    console.error('Error setting external WS config:', error);
+  }
+}
+
+// updateWebSocketServerButton removed - server is always enabled
+
+function updateClipboardButton() {
+  const button = document.getElementById('clipboardButton');
+  if (!button) {
+    return;
+  }
+
+  if (externalWsCopyToClipboard) {
+    button.classList.add('active');
+    button.title = 'Clipboard: ON';
+  } else {
+    button.classList.remove('active');
+    button.title = 'Clipboard: OFF';
+  }
+}
+
+// Clipboard copy functionality
+async function copyToClipboard(text) {
+  if (!text) {
+    console.log('[External WS] Clipboard copy skipped: empty text');
+    return;
+  }
+
+  try {
+    // Use Clipboard API with proper error handling
+    await navigator.clipboard.writeText(text);
+    console.log(`[External WS] Text copied to clipboard: ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
+  } catch (error) {
+    // If Clipboard API fails, try fallback method
+    console.warn('[External WS] Clipboard API failed, trying fallback:', error);
+    try {
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      textArea.style.position = 'fixed';
+      textArea.style.left = '-999999px';
+      textArea.style.top = '-999999px';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textArea);
+      if (successful) {
+        console.log(`[External WS] Text copied to clipboard (fallback): ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
+      } else {
+        console.error('[External WS] Fallback copy method also failed');
+      }
+    } catch (fallbackError) {
+      console.error('[External WS] Failed to copy to clipboard (both methods):', fallbackError);
+    }
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  // Initialize button event listeners
+  // Clipboard toggle button
+  const clipboardButton = document.getElementById('clipboardButton');
+  if (clipboardButton) {
+    clipboardButton.addEventListener('click', () => {
+      setExternalWsConfig(!externalWsCopyToClipboard);
+    });
+  }
+
   (async () => {
     await fetchUiConfig();
     fetchApiKeyStatus();
     fetchOscTranslationStatus();
     fetchAudioDevices();
     fetchAudioDeviceSettings();
+    await fetchExternalWsConfig();
     connect();
   })();
 });

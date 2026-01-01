@@ -122,6 +122,10 @@ FFMPEG_PATH = _env_str("FFMPEG_PATH", "ffmpeg")
 SERVER_HOST = _env_str("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = _env_int("SERVER_PORT", 8080)
 
+# 外部WebSocket服务器配置
+# EXTERNAL_WS_URI 格式: ws://host:port 或 ws://host:port/path
+EXTERNAL_WS_URI = _env_str("EXTERNAL_WS_URI", "ws://localhost:9039")
+
 
 def get_resource_path(relative_path):
     """获取资源文件的绝对路径，兼容开发环境和PyInstaller打包后的环境"""
