@@ -156,22 +156,37 @@ class WebServer:
             
             if self.external_websocket_clients:
                 client_list = list(self.external_websocket_clients)
-                results = await asyncio.gather(
-                    *[client.send_str(text) for client in client_list],
-                    return_exceptions=True
-                )
-                # Check for errors in send results and remove failed clients
-                error_count = 0
-                for client, result in zip(client_list, results):
-                    if isinstance(result, Exception):
-                        error_count += 1
+                # Send to each client individually to prevent one blocking client from affecting others
+                async def send_to_client_safely(client, text_to_send):
+                    try:
+                        # Use asyncio.wait_for to add timeout (5 seconds)
+                        # This prevents blocking if the client's send buffer is full
+                        await asyncio.wait_for(client.send_str(text_to_send), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        # Client's send buffer is full or client is not reading messages
+                        # Remove the client to prevent blocking other clients
                         self.external_websocket_clients.discard(client)
-                        print(f"[External WS] Removed client due to send error: {result}")
+                        print(f"[External WS] Removed client due to send timeout (buffer full or not reading)")
+                    except Exception as e:
+                        self.external_websocket_clients.discard(client)
+                        print(f"[External WS] Removed client due to send error: {e}")
                 
-                if error_count > 0:
-                    pass  # Error logging removed
-                else:
-                    pass  # Success logging removed
+                # Create tasks for each client but don't await them all
+                # This ensures that if one client blocks, others can still receive messages
+                # The event loop will process tasks as they become ready
+                tasks = []
+                for client in client_list:
+                    task = asyncio.create_task(send_to_client_safely(client, text))
+                    tasks.append(task)
+                
+                # Wait for at least one task to complete or timeout
+                # This ensures the event loop processes the sends even if there's only one client
+                if tasks:
+                    # Use asyncio.wait to wait for at least one task to complete
+                    # This ensures the event loop processes the sends
+                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=0.1)
+                    # Let remaining tasks continue in the background
+                    # They will complete when the client reads the messages
             else:
                 print(f"[External WS] No active clients after cleanup")
         else:

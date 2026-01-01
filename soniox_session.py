@@ -49,7 +49,8 @@ class SonioxSession:
         self._osc_translation_tokens: list[dict] = []
         # External WebSocket text buffer
         self._external_ws_buffer_lock = threading.Lock()
-        self._external_ws_tokens: list[dict] = []
+        self._external_ws_tokens: list[dict] = []  # Final tokens
+        self._external_ws_non_final_tokens: list[dict] = []  # Non-final tokens (青文字)
         self._external_ws_word_count = 0
 
         try:
@@ -419,18 +420,20 @@ class SonioxSession:
         return False
     
     def _flush_external_ws_segment(self):
-        """Flush external WebSocket buffer and send text"""
+        """Flush external WebSocket buffer and send text (final + non-final tokens)"""
         with self._external_ws_buffer_lock:
-            if not self._external_ws_tokens:
+            # Combine final and non-final tokens
+            all_tokens = list(self._external_ws_tokens) + list(self._external_ws_non_final_tokens)
+            if not all_tokens:
                 return
             
-            tokens = list(self._external_ws_tokens)
-            word_count = self._external_ws_word_count
+            # Clear final tokens (non-final tokens are kept for next update)
             self._external_ws_tokens.clear()
             self._external_ws_word_count = 0
+            # Note: non-final tokens are kept, they will be replaced on next update
         
         # Convert tokens to text using the same method as OSC
-        text = "".join([tok.get("text", "") for tok in tokens]).strip()
+        text = "".join([tok.get("text", "") for tok in all_tokens]).strip()
         
         if text and self.loop:
             # Get web_server from broadcast_callback closure or pass it differently
@@ -464,25 +467,59 @@ class SonioxSession:
             # We want to send the original transcript, not the translation
             translation_status = token.get("translation_status")
             if translation_status != "translation" and text:
-                # Add token to buffer first
+                # When a token becomes final, clear non-final tokens to prevent duplication
+                # This is because final tokens represent confirmed text, and non-final tokens
+                # may contain overlapping or duplicate text that was already finalized
                 with self._external_ws_buffer_lock:
-                    self._external_ws_tokens.append(token)
+                    # Clear non-final tokens when a final token is added
+                    # This prevents the same text from being sent twice (once as final, once as non-final)
+                    self._external_ws_non_final_tokens.clear()
+                    
+                    # Add the final token to buffer
                     word_count = self._count_words(text)
+                    self._external_ws_tokens.append(token)
                     self._external_ws_word_count += word_count
-                    total_words = self._external_ws_word_count
-                
-                # Check if we should flush based on conditions AFTER adding
-                should_flush = False
-                if total_words >= 20:
-                    should_flush = True
-                elif total_words >= 10 and ',' in text:
-                    should_flush = True
-                elif total_words >= 2 and '.' in text:
-                    should_flush = True
-                
-                # Flush if condition met (this will send the accumulated text)
-                if should_flush:
-                    self._flush_external_ws_segment()
+    
+    def _handle_external_ws_non_final_tokens(self, non_final_tokens: list[dict]):
+        """Handle non-final tokens for external WebSocket sending"""
+        # Check if external WS is enabled (via callback existence)
+        if not hasattr(self, 'external_ws_send_callback') or not self.external_ws_send_callback:
+            return
+        
+        # Process original transcription tokens (not translations)
+        filtered_tokens = []
+        for token in non_final_tokens:
+            text = token.get("text") or ""
+            translation_status = token.get("translation_status")
+            if translation_status != "translation" and text:
+                filtered_tokens.append(token)
+        
+        if not filtered_tokens:
+            return
+        
+        # Update non-final tokens buffer (replace, not append)
+        with self._external_ws_buffer_lock:
+            self._external_ws_non_final_tokens = filtered_tokens
+        
+        # Check if we should flush based on combined final + non-final tokens
+        with self._external_ws_buffer_lock:
+            # Combine final and non-final tokens for condition checking
+            all_tokens = self._external_ws_tokens + self._external_ws_non_final_tokens
+            combined_text = "".join([tok.get("text", "") for tok in all_tokens])
+            combined_word_count = sum([self._count_words(tok.get("text", "")) for tok in all_tokens])
+        
+        # Check conditions with combined tokens
+        should_flush = False
+        if combined_word_count >= 20:
+            should_flush = True
+        elif combined_word_count >= 10 and ',' in combined_text:
+            should_flush = True
+        elif combined_word_count >= 2 and '.' in combined_text:
+            should_flush = True
+        
+        # Flush if condition met
+        if should_flush:
+            self._flush_external_ws_segment()
     
     def _run_session(
         self,
@@ -554,6 +591,10 @@ class SonioxSession:
                         if new_final_tokens:
                             self._handle_osc_final_tokens(new_final_tokens)
                             self._handle_external_ws_final_tokens(new_final_tokens)
+                        
+                        # Handle non-final tokens for external WebSocket sending
+                        if non_final_tokens:
+                            self._handle_external_ws_non_final_tokens(non_final_tokens)
                         
                         # 将新的final tokens写入日志
                         if new_final_tokens and not self.is_paused:
