@@ -43,7 +43,7 @@ This program sets up a local WebSocket server at localhost:9039. Specify this UR
 
 Once you set up Yomitan or similar tools in GameSentenceMiner, you can use it like in the following demo. For videos like YouTube, there's a similar extension ASB Player, but with this program, you can mine words from audio regardless of the target app.
 
-todo: add demo video here
+https://github.com/user-attachments/assets/f69a15e9-a558-44a3-840c-6e87312a806d
 
 Also, when using Texthooker WebUI, turn on the 'Merge equal Line Starts' option.
 
