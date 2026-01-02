@@ -8,7 +8,7 @@ import re
 from aiohttp import web
 from aiohttp import WSMsgType
 
-from config import get_resource_path, LOCK_MANUAL_CONTROLS
+from config import get_resource_path, LOCK_MANUAL_CONTROLS, EXTERNAL_WS_URI
 from audio_capture import get_audio_devices
 
 # 日语假名注音支持
@@ -69,6 +69,8 @@ class WebServer:
         self.websocket_clients = set()
         self.app_runner = None
         self.api_key_error_message = None # 新增属性
+        self.external_websocket_clients = set()  # External WebSocket clients
+        self.external_ws_uri = EXTERNAL_WS_URI  # External WebSocket URI from config
 
     async def api_key_status_handler(self, request):
         """返回API Key状态"""
@@ -85,6 +87,132 @@ class WebServer:
                 *[client.send_str(message) for client in self.websocket_clients],
                 return_exceptions=True
             )
+    
+    async def external_websocket_handler(self, request):
+        """External WebSocket handler for external applications"""
+        remote_addr = request.remote
+        path = request.path
+        
+        ws = web.WebSocketResponse()
+        try:
+            await ws.prepare(request)
+        except Exception as e:
+            raise
+        
+        # Add to external client list
+        self.external_websocket_clients.add(ws)
+        client_id = f"{remote_addr}-{id(ws)}"
+        print(f"[External WS] Client connected (id={client_id}). Total external clients: {len(self.external_websocket_clients)}")
+        
+        try:
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    # Handle client messages if needed
+                    pass
+                elif msg.type == WSMsgType.ERROR:
+                    break
+                elif msg.type == WSMsgType.CLOSE:
+                    break
+        except Exception as e:
+            pass
+        finally:
+            # Remove from client list
+            self.external_websocket_clients.discard(ws)
+            remaining_count = len(self.external_websocket_clients)
+            print(f"[External WS] Client disconnected (id={client_id}). Total external clients: {remaining_count}")
+            # Ensure connection is closed
+            if not ws.closed:
+                try:
+                    await ws.close()
+                except Exception as close_err:
+                    pass
+        
+        return ws
+    
+    async def send_to_external_clients(self, text: str):
+        """Send text to all external WebSocket clients"""
+        if not text:
+            return
+        
+        # Send plain text (not JSON)
+        # Send to external WebSocket clients
+        if self.external_websocket_clients:
+            # Remove disconnected clients
+            disconnected_clients = []
+            for client in list(self.external_websocket_clients):
+                if client.closed:
+                    disconnected_clients.append(client)
+            
+            for client in disconnected_clients:
+                self.external_websocket_clients.discard(client)
+            
+            if self.external_websocket_clients:
+                client_list = list(self.external_websocket_clients)
+                
+                # Track send attempts and results
+                send_start_time = asyncio.get_event_loop().time()
+                
+                # Send to each client individually to prevent one blocking client from affecting others
+                async def send_to_client_safely(client, text_to_send, client_index):
+                    try:
+                        # Use asyncio.wait_for to add timeout (5 seconds)
+                        # This prevents blocking if the client's send buffer is full
+                        await asyncio.wait_for(client.send_str(text_to_send), timeout=5.0)
+                        return True
+                    except asyncio.TimeoutError:
+                        # Client's send buffer is full or client is not reading messages
+                        # Remove the client to prevent blocking other clients
+                        self.external_websocket_clients.discard(client)
+                        return False
+                    except Exception as e:
+                        self.external_websocket_clients.discard(client)
+                        return False
+                
+                # Create tasks for each client but don't await them all
+                # This ensures that if one client blocks, others can still receive messages
+                # The event loop will process tasks as they become ready
+                tasks = []
+                for idx, client in enumerate(client_list):
+                    task = asyncio.create_task(send_to_client_safely(client, text, idx))
+                    tasks.append(task)
+                
+                # Wait for at least one task to complete or timeout
+                # This ensures the event loop processes the sends even if there's only one client
+                if tasks:
+                    # Use asyncio.wait to wait for at least one task to complete
+                    # This ensures the event loop processes the sends
+                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=0.1)
+                    
+                    # Check results of completed tasks
+                    for task in done:
+                        try:
+                            task.result()
+                        except Exception as e:
+                            pass
+                    
+                    # Let remaining tasks continue in the background
+                    # They will complete when the client reads the messages
+    
+    async def external_ws_config_get_handler(self, request):
+        """Get external WebSocket configuration"""
+        return web.json_response({
+            "uri": self.external_ws_uri
+        })
+    
+    async def external_ws_config_set_handler(self, request):
+        """Set external WebSocket configuration"""
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        
+        if "uri" in payload:
+            self.external_ws_uri = str(payload["uri"])
+        
+        return web.json_response({
+            "status": "ok",
+            "uri": self.external_ws_uri
+        })
     
     async def websocket_handler(self, request):
         """WebSocket处理函数"""
@@ -436,9 +564,26 @@ class WebServer:
         app.router.add_post('/audio-device-input', self.set_input_device_handler)
         app.router.add_post('/audio-device-output', self.set_output_device_handler)
         app.router.add_post('/furigana', self.furigana_handler)
+        app.router.add_get('/external-ws-config', self.external_ws_config_get_handler)
+        app.router.add_post('/external-ws-config', self.external_ws_config_set_handler)
         
         # 静态文件服务 - 放在最后以避免覆盖API路由
         # 将 static 目录下的文件映射到根路径
         app.router.add_static('/', path=get_resource_path('static'), name='static')
+        
+        return app
+    
+    def create_external_ws_app(self):
+        """Create external WebSocket application"""
+        app = web.Application()
+        
+        # Add WebSocket route
+        app.router.add_get('/', self.external_websocket_handler)
+        
+        # Add a catch-all handler for 404
+        async def not_found_handler(request):
+            return web.Response(text=f"404: Path '{request.path}' not found. Available path: /", status=404)
+        
+        app.router.add_route('*', '/{path:.*}', not_found_handler)
         
         return app

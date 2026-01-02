@@ -1,15 +1,17 @@
 """
 配置文件 - 存储所有配置项和常量
 """
+
+import locale
 import os
 import sys
-import locale
 import time
-from dotenv import load_dotenv
 
+from dotenv import load_dotenv
 
 # Soniox 支持的语言（ISO 639-1），用于校验系统语言/目标语言。
 # 来源：docs/supported-languages.mdx
+# fmt: off
 SUPPORTED_LANGUAGE_CODES = {
     "af", "sq", "ar", "az", "eu", "be", "bn", "bs", "bg", "ca",
     "zh", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "gl",
@@ -121,6 +123,21 @@ FFMPEG_PATH = _env_str("FFMPEG_PATH", "ffmpeg")
 # AUTO_OPEN_WEBVIEW=True 时强制绑定到 127.0.0.1；关闭后默认绑定到 0.0.0.0 以便局域网访问
 SERVER_HOST = _env_str("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = _env_int("SERVER_PORT", 8080)
+
+# 外部WebSocket服务器配置
+# EXTERNAL_WS_URI 格式: ws://host:port 或 ws://host:port/path
+EXTERNAL_WS_URI = _env_str("EXTERNAL_WS_URI", "ws://localhost:9039")
+
+
+# External WebSocket non-final delivery rate control
+# Controls the delivery frequency of non-final tokens (send once per N tokens)
+# Default: 3 (send once per 3 tokens)
+# Always delivered when final is confirmed
+EXTERNAL_WS_NON_FINAL_SEND_INTERVAL = _env_int("EXTERNAL_WS_NON_FINAL_SEND_INTERVAL", 3)
+# Dummy client auto-connection
+# True: Automatically connect a dummy client to the external WebSocket server (to avoid WebSocket delivery issues)
+# False: Do not connect a dummy client
+EXTERNAL_WS_AUTO_DUMMY_CLIENT = _env_bool("EXTERNAL_WS_AUTO_DUMMY_CLIENT", True)
 
 
 def get_resource_path(relative_path):

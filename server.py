@@ -11,6 +11,8 @@ import os
 import time
 from dotenv import load_dotenv
 from aiohttp import web
+from aiohttp import ClientSession
+from aiohttp import WSMsgType
 
 # 加载 .env 文件中的环境变量
 load_dotenv()
@@ -109,11 +111,50 @@ def run_server(app, sock):
         sock.close()
 
 
+# TODO: Fix to work properly without dummy client
+async def dummy_client_loop(ws_uri: str):
+    """Dummy client loop - Connects to external WebSocket server and only receives messages"""
+    reconnect_delay = 2.0
+    max_reconnect_delay = 60.0
+    
+    while True:
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(ws_uri) as ws:
+                    reconnect_delay = 2.0
+                    
+                    async for msg in ws:
+                        if msg.type == WSMsgType.TEXT:
+                            # Just receive messages (do nothing)
+                            # This clears the WebSocket server's buffer and allows messages to reach other clients
+                            pass
+                        elif msg.type == WSMsgType.ERROR:
+                            break
+                        elif msg.type == WSMsgType.CLOSE:
+                            break
+        except Exception as e:
+            await asyncio.sleep(reconnect_delay)
+            # Increase retry interval with exponential backoff
+            reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
+
+
+def run_dummy_client(ws_uri: str):
+    """Run dummy client in a separate thread"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(dummy_client_loop(ws_uri))
+    except Exception as e:
+        pass
+    finally:
+        loop.close()
+
+
 def main():
     args, _unknown = parse_cli_args(sys.argv[1:])
     apply_cli_overrides_to_env(args)
 
-    from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW
+    from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW, EXTERNAL_WS_URI, EXTERNAL_WS_AUTO_DUMMY_CLIENT
     from logger import TranscriptLogger
     from soniox_session import SonioxSession
     from web_server import WebServer
@@ -137,6 +178,16 @@ def main():
     # 创建Web服务器
     web_server = WebServer(soniox_session, logger)
     
+    # Set external WebSocket send callback
+    async def external_ws_send_callback(text: str):
+        if web_server:
+            try:
+                await web_server.send_to_external_clients(text)
+            except Exception as e:
+                pass
+    
+    soniox_session.external_ws_send_callback = external_ws_send_callback
+    
     # 设置信号处理，优雅退出
     def signal_handler(sig, frame):
         print("\n👋 Received termination signal, shutting down server...")
@@ -148,6 +199,9 @@ def main():
     
     # 创建应用
     app = web_server.create_app()
+    
+    # 创建外部WebSocket应用
+    external_ws_app = web_server.create_external_ws_app()
     
     # 启动后台任务
     async def start_background_tasks(app_instance):
@@ -209,12 +263,39 @@ def main():
     server_url = f"http://{resolve_display_host()}:{actual_port}"
     print(f"🚀 Server starting on {bind_host}:{actual_port}")
 
+    # Parse external WebSocket URI from config
+    from urllib.parse import urlparse
+    parsed_uri = urlparse(EXTERNAL_WS_URI)
+    external_ws_host = parsed_uri.hostname or "127.0.0.1"
+    external_ws_port = parsed_uri.port or 9039
+    external_ws_socket, external_ws_actual_port = create_listening_socket(external_ws_host, external_ws_port)
+    if external_ws_port != external_ws_actual_port:
+        print(f"⚠️  External WS port {external_ws_port} unavailable, switched to {external_ws_actual_port}")
+    print(f"🔌 External WebSocket server starting on {external_ws_host}:{external_ws_actual_port}")
+    
+    # 実際のポートを使用してダミークライアント用のURIを構築
+    dummy_client_ws_uri = f"ws://{external_ws_host}:{external_ws_actual_port}{parsed_uri.path or '/'}"
+
     debug = bool(args.debug)
 
     # 在新线程中启动 aiohttp 服务器
     server_thread = threading.Thread(target=run_server, args=(app, listener_socket))
     server_thread.daemon = True
     server_thread.start()
+    
+    # 在新线程中启动外部WebSocket服务器
+    external_ws_thread = threading.Thread(target=run_server, args=(external_ws_app, external_ws_socket))
+    external_ws_thread.daemon = True
+    external_ws_thread.start()
+    
+    # Automatically connect dummy client (to avoid WebSocket delivery issues)
+    if EXTERNAL_WS_AUTO_DUMMY_CLIENT:
+        # Wait a bit for the server to start
+        time.sleep(0.5)
+        dummy_client_thread = threading.Thread(target=run_dummy_client, args=(dummy_client_ws_uri,))
+        dummy_client_thread.daemon = True
+        dummy_client_thread.start()
+        print(f"🤖 Dummy client connecting to {dummy_client_ws_uri}")
 
     if AUTO_OPEN_WEBVIEW:
         try:

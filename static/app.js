@@ -193,6 +193,10 @@ const pendingFuriganaRequests = new Set();
 // 移动端底部留白开关（默认关闭）
 let bottomSafeAreaEnabled = localStorage.getItem('bottomSafeAreaEnabled') === 'true';
 
+// External WebSocket settings
+let externalWsEnabled = false;
+let externalWsUri = 'ws://localhost:9039';  // Fixed URI, not configurable
+
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
 let isRestarting = false;    // 是否正在重启中
@@ -210,6 +214,7 @@ updateBottomSafeAreaButton();
 applyBottomSafeArea();
 applyLockPauseRestartControlsUI();
 applyStaticUiText();
+fetchExternalWsConfig();
 
 function applyStaticUiText() {
   if (document && document.documentElement) {
@@ -1213,6 +1218,8 @@ function connect() {
 
   ws.onopen = () => {
     console.log('WebSocket connected');
+    // Refresh external WS config when reconnecting
+    fetchExternalWsConfig();
   };
 
   ws.onmessage = (event) => {
@@ -2059,13 +2066,34 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// External WebSocket functions
+async function fetchExternalWsConfig() {
+  try {
+    const response = await fetch('/external-ws-config');
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    if (data) {
+      if (data.uri) {
+        externalWsUri = data.uri;
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching external WS config:', error);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  // Initialize button event listeners
+
   (async () => {
     await fetchUiConfig();
     fetchApiKeyStatus();
     fetchOscTranslationStatus();
     fetchAudioDevices();
     fetchAudioDeviceSettings();
+    await fetchExternalWsConfig();
     connect();
   })();
 });
