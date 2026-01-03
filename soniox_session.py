@@ -58,6 +58,8 @@ class SonioxSession:
         # Track the last flush state to detect new additions
         self._external_ws_last_flush_final_text = ""  # Last flushed final tokens text
         self._external_ws_last_flush_non_final_text = ""  # Last flushed non-final tokens text
+        self.external_ws_send_enabled = True  # Enable sending transcription (default: on)
+        self.external_ws_send_non_final = False  # Also send text during transcription (default: off)
 
         try:
             from config import TRANSLATION_TARGET_LANG
@@ -147,6 +149,24 @@ class SonioxSession:
     def get_osc_translation_enabled(self) -> bool:
         with self._osc_buffer_lock:
             return self.osc_translation_enabled
+    
+    def set_external_ws_send_enabled(self, enabled: bool):
+        """设置外部WebSocket发送开关"""
+        self.external_ws_send_enabled = enabled
+        print(f"🔌 External WS send enabled: {enabled}")
+    
+    def get_external_ws_send_enabled(self) -> bool:
+        """获取外部WebSocket发送开关状态"""
+        return self.external_ws_send_enabled
+    
+    def set_external_ws_send_non_final(self, enabled: bool):
+        """设置外部WebSocket发送non-final开关"""
+        self.external_ws_send_non_final = enabled
+        print(f"🔌 External WS send non-final: {enabled}")
+    
+    def get_external_ws_send_non_final(self) -> bool:
+        """获取外部WebSocket发送non-final开关状态"""
+        return self.external_ws_send_non_final
 
     def _reset_osc_buffer(self):
         with self._osc_buffer_lock:
@@ -430,10 +450,17 @@ class SonioxSession:
     
     def _flush_external_ws_segment(self):
         """Flush external WebSocket buffer and send text (final + non-final tokens)"""
+        # Check if sending is enabled
+        if not self.external_ws_send_enabled:
+            return
+        
         with self._external_ws_buffer_lock:
-            # Combine final and non-final tokens
-            all_tokens = list(self._external_ws_tokens) + list(self._external_ws_non_final_tokens)
-            if not all_tokens:
+            # Combine final and non-final tokens (only include non-final if enabled)
+            tokens_to_send = list(self._external_ws_tokens)
+            if self.external_ws_send_non_final:
+                tokens_to_send = tokens_to_send + list(self._external_ws_non_final_tokens)
+            
+            if not tokens_to_send:
                 return
             
             # Save current state before clearing (for detecting new additions)
@@ -450,7 +477,7 @@ class SonioxSession:
             self._external_ws_last_flush_non_final_text = non_final_text
         
         # Convert tokens to text using the same method as OSC
-        text = "".join([tok.get("text", "") for tok in all_tokens]).strip()
+        text = "".join([tok.get("text", "") for tok in tokens_to_send]).strip()
         
         if text and self.loop:
             # Get web_server from broadcast_callback closure or pass it differently
@@ -466,6 +493,10 @@ class SonioxSession:
         """Handle final tokens for external WebSocket sending"""
         # Check if external WS is enabled (via callback existence)
         if not hasattr(self, 'external_ws_send_callback') or not self.external_ws_send_callback:
+            return
+        
+        # Check if sending is enabled
+        if not self.external_ws_send_enabled:
             return
         
         has_end_token = False
@@ -529,6 +560,10 @@ class SonioxSession:
         """Handle non-final tokens for external WebSocket sending"""
         # Check if external WS is enabled (via callback existence)
         if not hasattr(self, 'external_ws_send_callback') or not self.external_ws_send_callback:
+            return
+        
+        # Check if sending non-final is enabled
+        if not self.external_ws_send_non_final:
             return
         
         # Process original transcription tokens (not translations)
