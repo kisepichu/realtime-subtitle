@@ -23,6 +23,8 @@ const translationLangButton = document.getElementById('translationLangButton');
 const translationLangIcon = document.getElementById('translationLangIcon');
 const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
+const externalWsButton = document.getElementById('externalWsButton');
+const externalWsIcon = document.getElementById('externalWsIcon');
 const isMobileBrowser = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
 
 const t = (key, vars) => {
@@ -196,6 +198,8 @@ let bottomSafeAreaEnabled = localStorage.getItem('bottomSafeAreaEnabled') === 't
 // External WebSocket settings
 let externalWsEnabled = false;
 let externalWsUri = 'ws://localhost:9039';  // Fixed URI, not configurable
+let externalWsSendEnabled = true;  // Enable sending transcription (default: on)
+let externalWsSendNonFinal = false;  // Also send text during transcription (default: off)
 
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
@@ -2084,6 +2088,214 @@ async function fetchExternalWsConfig() {
   }
 }
 
+async function fetchExternalWsSettings() {
+  try {
+    const response = await fetch('/external-ws-settings');
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    if (data) {
+      if (typeof data.send_enabled === 'boolean') {
+        externalWsSendEnabled = data.send_enabled;
+      }
+      if (typeof data.send_non_final === 'boolean') {
+        externalWsSendNonFinal = data.send_non_final;
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching external WS settings:', error);
+  }
+}
+
+// External WebSocket settings popover
+let externalWsPopoverEl = null;
+let externalWsPopoverOpen = false;
+let externalWsPopoverCleanup = null;
+
+function ensureExternalWsPopover() {
+  if (externalWsPopoverEl) {
+    return externalWsPopoverEl;
+  }
+
+  const el = document.createElement('div');
+  el.className = 'external-ws-popover';
+  el.style.display = 'none';
+
+  // Enable sending transcription checkbox
+  const enableSection = document.createElement('div');
+  enableSection.className = 'external-ws-section';
+  const enableLabel = document.createElement('label');
+  enableLabel.className = 'external-ws-toggle-label';
+  enableLabel.title = externalWsUri;  // Show URI on hover
+  const enableCheckbox = document.createElement('input');
+  enableCheckbox.type = 'checkbox';
+  enableCheckbox.id = 'externalWsSendEnabled';
+  enableCheckbox.checked = externalWsSendEnabled;
+  enableCheckbox.addEventListener('change', async () => {
+    externalWsSendEnabled = enableCheckbox.checked;
+    await updateExternalWsSettings();
+  });
+  const enableText = document.createElement('span');
+  enableText.textContent = 'Enable sending transcription';
+  enableLabel.appendChild(enableCheckbox);
+  enableLabel.appendChild(enableText);
+  enableSection.appendChild(enableLabel);
+  el.appendChild(enableSection);
+
+  // Also send text during transcription checkbox
+  const nonFinalSection = document.createElement('div');
+  nonFinalSection.className = 'external-ws-section';
+  const nonFinalLabel = document.createElement('label');
+  nonFinalLabel.className = 'external-ws-toggle-label';
+  nonFinalLabel.title = 'When this is on, turn on the "Merge equal Line Starts" setting in the Texthooker UI';
+  const nonFinalCheckbox = document.createElement('input');
+  nonFinalCheckbox.type = 'checkbox';
+  nonFinalCheckbox.id = 'externalWsSendNonFinal';
+  nonFinalCheckbox.checked = externalWsSendNonFinal;
+  nonFinalCheckbox.addEventListener('change', async () => {
+    externalWsSendNonFinal = nonFinalCheckbox.checked;
+    await updateExternalWsSettings();
+  });
+  const nonFinalText = document.createElement('span');
+  nonFinalText.textContent = 'Also send text during transcription';
+  nonFinalLabel.appendChild(nonFinalCheckbox);
+  nonFinalLabel.appendChild(nonFinalText);
+  nonFinalSection.appendChild(nonFinalLabel);
+  el.appendChild(nonFinalSection);
+
+  document.body.appendChild(el);
+  externalWsPopoverEl = el;
+  return el;
+}
+
+function updateExternalWsPopover() {
+  if (!externalWsPopoverEl) {
+    return;
+  }
+  const enableCheckbox = externalWsPopoverEl.querySelector('#externalWsSendEnabled');
+  const nonFinalCheckbox = externalWsPopoverEl.querySelector('#externalWsSendNonFinal');
+  if (enableCheckbox) {
+    enableCheckbox.checked = externalWsSendEnabled;
+  }
+  if (nonFinalCheckbox) {
+    nonFinalCheckbox.checked = externalWsSendNonFinal;
+  }
+  // Update URI in title
+  const enableLabel = externalWsPopoverEl.querySelector('#externalWsSendEnabled').closest('label');
+  if (enableLabel) {
+    enableLabel.title = externalWsUri;
+  }
+}
+
+function showExternalWsPopover() {
+  if (!externalWsButton) {
+    return;
+  }
+  const el = ensureExternalWsPopover();
+  updateExternalWsPopover();
+
+  const rect = externalWsButton.getBoundingClientRect();
+  const padding = 8;
+
+  el.style.display = 'block';
+
+  const popoverRect = el.getBoundingClientRect();
+
+  // Place to the left of the button bar, vertically aligned with button
+  let top = rect.top - 10;
+  if (top < padding) top = padding;
+  if (top + popoverRect.height > window.innerHeight - padding) {
+    top = Math.max(padding, window.innerHeight - padding - popoverRect.height);
+  }
+
+  let left = rect.left - popoverRect.width - 12;
+  if (left < padding) {
+    left = padding;
+  }
+
+  el.style.top = `${top}px`;
+  el.style.left = `${left}px`;
+
+  externalWsPopoverOpen = true;
+
+  const onDocMouseDown = (event) => {
+    const target = event.target;
+    if (!target) {
+      return;
+    }
+    if (externalWsPopoverEl && externalWsPopoverEl.contains(target)) {
+      return;
+    }
+    if (externalWsButton && externalWsButton.contains(target)) {
+      return;
+    }
+    hideExternalWsPopover();
+  };
+
+  const onKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      hideExternalWsPopover();
+    }
+  };
+
+  document.addEventListener('mousedown', onDocMouseDown, true);
+  document.addEventListener('keydown', onKeyDown, true);
+  externalWsPopoverCleanup = () => {
+    document.removeEventListener('mousedown', onDocMouseDown, true);
+    document.removeEventListener('keydown', onKeyDown, true);
+  };
+}
+
+function hideExternalWsPopover() {
+  if (!externalWsPopoverOpen) {
+    return;
+  }
+  externalWsPopoverOpen = false;
+  if (externalWsPopoverEl) {
+    externalWsPopoverEl.style.display = 'none';
+  }
+  if (typeof externalWsPopoverCleanup === 'function') {
+    externalWsPopoverCleanup();
+  }
+  externalWsPopoverCleanup = null;
+}
+
+async function updateExternalWsSettings() {
+  try {
+    const response = await fetch('/external-ws-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        send_enabled: externalWsSendEnabled,
+        send_non_final: externalWsSendNonFinal
+      })
+    });
+
+    if (!response.ok) {
+      console.error('Failed to update external WS settings:', response.statusText);
+      return;
+    }
+
+    const data = await response.json();
+    if (data.status === 'ok') {
+      console.log('External WS settings updated successfully');
+    }
+  } catch (error) {
+    console.error('Error updating external WS settings:', error);
+  }
+}
+
+if (externalWsButton) {
+  externalWsButton.addEventListener('click', () => {
+    if (externalWsPopoverOpen) {
+      hideExternalWsPopover();
+    } else {
+      showExternalWsPopover();
+    }
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   // Initialize button event listeners
 
@@ -2094,6 +2306,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchAudioDevices();
     fetchAudioDeviceSettings();
     await fetchExternalWsConfig();
+    await fetchExternalWsSettings();
     connect();
   })();
 });

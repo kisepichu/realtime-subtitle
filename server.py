@@ -188,6 +188,10 @@ def main():
     
     soniox_session.external_ws_send_callback = external_ws_send_callback
     
+    # Initialize external WS settings in soniox_session
+    soniox_session.set_external_ws_send_enabled(web_server.external_ws_send_enabled)
+    soniox_session.set_external_ws_send_non_final(web_server.external_ws_send_non_final)
+    
     # 设置信号处理，优雅退出
     def signal_handler(sig, frame):
         print("\n👋 Received termination signal, shutting down server...")

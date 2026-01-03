@@ -71,6 +71,8 @@ class WebServer:
         self.api_key_error_message = None # 新增属性
         self.external_websocket_clients = set()  # External WebSocket clients
         self.external_ws_uri = EXTERNAL_WS_URI  # External WebSocket URI from config
+        self.external_ws_send_enabled = True  # Enable sending transcription (default: on)
+        self.external_ws_send_non_final = False  # Also send text during transcription (default: off)
 
     async def api_key_status_handler(self, request):
         """返回API Key状态"""
@@ -132,6 +134,10 @@ class WebServer:
     async def send_to_external_clients(self, text: str):
         """Send text to all external WebSocket clients"""
         if not text:
+            return
+        
+        # Check if sending is enabled
+        if not self.external_ws_send_enabled:
             return
         
         # Send plain text (not JSON)
@@ -212,6 +218,37 @@ class WebServer:
         return web.json_response({
             "status": "ok",
             "uri": self.external_ws_uri
+        })
+    
+    async def external_ws_settings_get_handler(self, request):
+        """Get external WebSocket settings"""
+        return web.json_response({
+            "status": "ok",
+            "send_enabled": self.external_ws_send_enabled,
+            "send_non_final": self.external_ws_send_non_final
+        })
+    
+    async def external_ws_settings_set_handler(self, request):
+        """Set external WebSocket settings"""
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        
+        if "send_enabled" in payload:
+            self.external_ws_send_enabled = bool(payload["send_enabled"])
+            # Update soniox_session setting
+            self.soniox_session.set_external_ws_send_enabled(self.external_ws_send_enabled)
+        
+        if "send_non_final" in payload:
+            self.external_ws_send_non_final = bool(payload["send_non_final"])
+            # Update soniox_session setting
+            self.soniox_session.set_external_ws_send_non_final(self.external_ws_send_non_final)
+        
+        return web.json_response({
+            "status": "ok",
+            "send_enabled": self.external_ws_send_enabled,
+            "send_non_final": self.external_ws_send_non_final
         })
     
     async def websocket_handler(self, request):
@@ -566,6 +603,8 @@ class WebServer:
         app.router.add_post('/furigana', self.furigana_handler)
         app.router.add_get('/external-ws-config', self.external_ws_config_get_handler)
         app.router.add_post('/external-ws-config', self.external_ws_config_set_handler)
+        app.router.add_get('/external-ws-settings', self.external_ws_settings_get_handler)
+        app.router.add_post('/external-ws-settings', self.external_ws_settings_set_handler)
         
         # 静态文件服务 - 放在最后以避免覆盖API路由
         # 将 static 目录下的文件映射到根路径
