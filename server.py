@@ -191,6 +191,7 @@ def main():
     # Initialize external WS settings in soniox_session
     soniox_session.set_external_ws_send_enabled(web_server.external_ws_send_enabled)
     soniox_session.set_external_ws_send_non_final(web_server.external_ws_send_non_final)
+    soniox_session.set_external_ws_send_translation(web_server.external_ws_send_translation)
     
     # 设置信号处理，优雅退出
     def signal_handler(sig, frame):

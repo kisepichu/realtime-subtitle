@@ -51,6 +51,7 @@ class SonioxSession:
         # External WebSocket text buffer
         self._external_ws_buffer_lock = threading.Lock()
         self._external_ws_tokens: list[dict] = []  # Final tokens
+        self._external_ws_translation_tokens: list[dict] = []  # Final translation tokens
         self._external_ws_non_final_tokens: list[dict] = []  # Non-final tokens (青文字)
         self._external_ws_word_count = 0
         self._external_ws_non_final_token_count = 0
@@ -58,8 +59,10 @@ class SonioxSession:
         # Track the last flush state to detect new additions
         self._external_ws_last_flush_final_text = ""  # Last flushed final tokens text
         self._external_ws_last_flush_non_final_text = ""  # Last flushed non-final tokens text
+        self._external_ws_last_sent_original_text = ""  # Last sent original text (for late-arriving translations)
         self.external_ws_send_enabled = True  # Enable sending transcription (default: on)
         self.external_ws_send_non_final = False  # Also send text during transcription (default: off)
+        self.external_ws_send_translation = False  # Also send translations (default: off)
 
         try:
             from config import TRANSLATION_TARGET_LANG
@@ -167,6 +170,15 @@ class SonioxSession:
     def get_external_ws_send_non_final(self) -> bool:
         """获取外部WebSocket发送non-final开关状态"""
         return self.external_ws_send_non_final
+    
+    def set_external_ws_send_translation(self, enabled: bool):
+        """设置外部WebSocket发送翻訳开关"""
+        self.external_ws_send_translation = enabled
+        print(f"🔌 External WS send translation: {enabled}")
+    
+    def get_external_ws_send_translation(self) -> bool:
+        """获取外部WebSocket发送翻訳开关状态"""
+        return self.external_ws_send_translation
 
     def _reset_osc_buffer(self):
         with self._osc_buffer_lock:
@@ -175,10 +187,12 @@ class SonioxSession:
     def _reset_external_ws_buffer(self):
         with self._external_ws_buffer_lock:
             self._external_ws_tokens.clear()
+            self._external_ws_translation_tokens.clear()
             self._external_ws_word_count = 0
             self._external_ws_non_final_token_count = 0
             self._external_ws_last_flush_final_text = ""
             self._external_ws_last_flush_non_final_text = ""
+            self._external_ws_last_sent_original_text = ""
     
     def resume(self, api_key: Optional[str] = None, audio_format: Optional[str] = None,
                translation: Optional[str] = None, loop: Optional[asyncio.AbstractEventLoop] = None,
@@ -508,9 +522,16 @@ class SonioxSession:
             final_text = "".join([tok.get("text", "") for tok in self._external_ws_tokens])
             non_final_text = "".join([tok.get("text", "") for tok in self._external_ws_non_final_tokens])
             
+            # Get translation text if translation sending is enabled
+            translation_text = ""
+            if self.external_ws_send_translation:
+                translation_text = "".join([tok.get("text", "") for tok in self._external_ws_translation_tokens]).strip()
+            
             # Clear final tokens (non-final tokens are kept for next update)
             self._external_ws_tokens.clear()
             self._external_ws_word_count = 0
+            # Clear translation tokens
+            self._external_ws_translation_tokens.clear()
             # Clear non-final tokens if line break condition is met or interval-based flush
             if clear_non_final_on_line_break or clear_non_final_on_interval:
                 self._external_ws_non_final_tokens.clear()
@@ -521,9 +542,16 @@ class SonioxSession:
             # Update last flush state
             self._external_ws_last_flush_final_text = final_text
             self._external_ws_last_flush_non_final_text = non_final_text
+            # Update last sent original text (for late-arriving translations)
+            if final_text:
+                self._external_ws_last_sent_original_text = final_text
         
         # Convert tokens to text using the same method as OSC
         text = "".join([tok.get("text", "") for tok in tokens_to_send]).strip()
+        
+        # Append translation in parentheses if available
+        if translation_text:
+            text = f"{text} ({translation_text})"
         
         if text and self.loop:
             # Get web_server from broadcast_callback closure or pass it differently
@@ -546,6 +574,11 @@ class SonioxSession:
             return
         
         has_end_token = False
+        has_original_token = False
+        
+        # Separate original and translation tokens from the current batch
+        batch_original_tokens = []
+        batch_translation_tokens = []
         
         with self._external_ws_buffer_lock:
             self._external_ws_non_final_tokens.clear()
@@ -565,16 +598,62 @@ class SonioxSession:
                 has_end_token = True
                 continue
             
-            # Process original transcription tokens (not translations)
-            # translation_status can be "original", "none", or missing
-            # We want to send the original transcript, not the translation
             translation_status = token.get("translation_status")
-            if translation_status != "translation" and text:
-                with self._external_ws_buffer_lock:
-                    # Add the final token to buffer
-                    word_count = self._count_words(text)
+            
+            # Separate original and translation tokens from current batch
+            if translation_status == "translation":
+                if self.external_ws_send_translation and text:
+                    batch_translation_tokens.append(token)
+            else:
+                if text:
+                    batch_original_tokens.append(token)
+                    has_original_token = True
+        
+        # If we have original tokens in this batch, process them with their corresponding translations
+        if batch_original_tokens:
+            with self._external_ws_buffer_lock:
+                # Add original tokens to buffer
+                for token in batch_original_tokens:
+                    word_count = self._count_words(token.get("text", ""))
                     self._external_ws_tokens.append(token)
                     self._external_ws_word_count += word_count
+                
+                # Add translation tokens from the same batch to translation buffer
+                # This ensures translations are matched with their corresponding originals
+                for token in batch_translation_tokens:
+                    self._external_ws_translation_tokens.append(token)
+        
+        # If we only have translation tokens (no original tokens in this batch),
+        # This means translation arrived after the original was already sent.
+        # In this case, send the translation with the last sent original text.
+        if batch_translation_tokens and not batch_original_tokens and self.external_ws_send_translation:
+            with self._external_ws_buffer_lock:
+                # Get the last sent original text
+                last_original = self._external_ws_last_sent_original_text
+                
+                # Build translation text
+                translation_text = "".join([tok.get("text", "") for tok in batch_translation_tokens]).strip()
+                
+                # If we have a last sent original and translation, send them together
+                if last_original and translation_text:
+                    combined_text = f"{last_original} ({translation_text})"
+                    if self.loop:
+                        if hasattr(self, 'external_ws_send_callback') and self.external_ws_send_callback:
+                            asyncio.run_coroutine_threadsafe(
+                                self.external_ws_send_callback(combined_text),
+                                self.loop
+                            )
+                # If no last original but we have translation, just send translation
+                # (This shouldn't happen normally, but handle it gracefully)
+                elif translation_text:
+                    if self.loop:
+                        if hasattr(self, 'external_ws_send_callback') and self.external_ws_send_callback:
+                            asyncio.run_coroutine_threadsafe(
+                                self.external_ws_send_callback(translation_text),
+                                self.loop
+                            )
+            # Return early since we've handled translation-only case
+            return
         
         # Check if we have any tokens to send or <end> token
         with self._external_ws_buffer_lock:
@@ -597,7 +676,9 @@ class SonioxSession:
         # Always deliver when final is confirmed (regardless of rate control)
         # If <end> token exists or final token exists, send all at once
         # Clear non-final tokens when line break condition is met to prevent immediate re-triggering
-        self._flush_external_ws_segment(clear_non_final_on_line_break=should_reset_word_count)
+        # Only flush if we have original tokens (not just translation tokens)
+        if has_original_token or has_end_token:
+            self._flush_external_ws_segment(clear_non_final_on_line_break=should_reset_word_count)
     
     def _handle_external_ws_non_final_tokens(self, non_final_tokens: list[dict]):
         """Handle non-final tokens for external WebSocket sending"""

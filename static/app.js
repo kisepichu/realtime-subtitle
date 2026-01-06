@@ -200,6 +200,7 @@ let externalWsEnabled = false;
 let externalWsUri = 'ws://localhost:9039';  // Fixed URI, not configurable
 let externalWsSendEnabled = true;  // Enable sending transcription (default: on)
 let externalWsSendNonFinal = false;  // Also send text during transcription (default: off)
+let externalWsSendTranslation = false;  // Also send translations (default: off)
 
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
@@ -2102,6 +2103,9 @@ async function fetchExternalWsSettings() {
       if (typeof data.send_non_final === 'boolean') {
         externalWsSendNonFinal = data.send_non_final;
       }
+      if (typeof data.send_translation === 'boolean') {
+        externalWsSendTranslation = data.send_translation;
+      }
     }
   } catch (error) {
     console.error('Error fetching external WS settings:', error);
@@ -2164,6 +2168,26 @@ function ensureExternalWsPopover() {
   nonFinalSection.appendChild(nonFinalLabel);
   el.appendChild(nonFinalSection);
 
+  // Also send translations checkbox
+  const translationSection = document.createElement('div');
+  translationSection.className = 'external-ws-section';
+  const translationLabel = document.createElement('label');
+  translationLabel.className = 'external-ws-toggle-label';
+  const translationCheckbox = document.createElement('input');
+  translationCheckbox.type = 'checkbox';
+  translationCheckbox.id = 'externalWsSendTranslation';
+  translationCheckbox.checked = externalWsSendTranslation;
+  translationCheckbox.addEventListener('change', async () => {
+    externalWsSendTranslation = translationCheckbox.checked;
+    await updateExternalWsSettings();
+  });
+  const translationText = document.createElement('span');
+  translationText.textContent = 'Also send translations';
+  translationLabel.appendChild(translationCheckbox);
+  translationLabel.appendChild(translationText);
+  translationSection.appendChild(translationLabel);
+  el.appendChild(translationSection);
+
   document.body.appendChild(el);
   externalWsPopoverEl = el;
   return el;
@@ -2175,11 +2199,15 @@ function updateExternalWsPopover() {
   }
   const enableCheckbox = externalWsPopoverEl.querySelector('#externalWsSendEnabled');
   const nonFinalCheckbox = externalWsPopoverEl.querySelector('#externalWsSendNonFinal');
+  const translationCheckbox = externalWsPopoverEl.querySelector('#externalWsSendTranslation');
   if (enableCheckbox) {
     enableCheckbox.checked = externalWsSendEnabled;
   }
   if (nonFinalCheckbox) {
     nonFinalCheckbox.checked = externalWsSendNonFinal;
+  }
+  if (translationCheckbox) {
+    translationCheckbox.checked = externalWsSendTranslation;
   }
   // Update URI in title
   const enableLabel = externalWsPopoverEl.querySelector('#externalWsSendEnabled').closest('label');
@@ -2268,7 +2296,8 @@ async function updateExternalWsSettings() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         send_enabled: externalWsSendEnabled,
-        send_non_final: externalWsSendNonFinal
+        send_non_final: externalWsSendNonFinal,
+        send_translation: externalWsSendTranslation
       })
     });
 
