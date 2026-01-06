@@ -133,7 +133,7 @@ EXTERNAL_WS_URI = _env_str("EXTERNAL_WS_URI", "ws://localhost:9039")
 # Controls the delivery frequency of non-final tokens (send once per N tokens)
 # Default: 3 (send once per 3 tokens)
 # Always delivered when final is confirmed
-EXTERNAL_WS_NON_FINAL_SEND_INTERVAL = _env_int("EXTERNAL_WS_NON_FINAL_SEND_INTERVAL", 3)
+EXTERNAL_WS_NON_FINAL_SEND_INTERVAL = _env_int("EXTERNAL_WS_NON_FINAL_SEND_INTERVAL", 5)
 # Dummy client auto-connection
 # True: Automatically connect a dummy client to the external WebSocket server (to avoid WebSocket delivery issues)
 # False: Do not connect a dummy client
