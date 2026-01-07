@@ -435,75 +435,15 @@ class SonioxSession:
             return 0
         return len(text.split())
     
-    def _check_line_break_condition(self, word_count: int, full_text: str = "", new_text: str = "") -> bool:
-        """Check if line break condition is met based on word count and punctuation.
-        
-        This function checks if the buffer should be flushed based on:
-        - 20 words or more: always flush
-        - 10 words or more and comma appears: flush
-        - 2 words or more and dot appears: flush
-        
-        Args:
-            word_count: Total word count in the buffer
-            full_text: Full text in the buffer (for final tokens, check entire text)
-            new_text: Newly added text (for non-final tokens, check only new text to avoid re-triggering)
-        
-        Returns:
-            True if line break condition is met, False otherwise
-        """
-        # Condition 1: 20 words or more
-        if word_count >= 20:
-            return True
-        
-        # Condition 2: 10 words or more and comma appears
-        if word_count >= 10:
-            # For non-final tokens, check only new text to avoid re-triggering on same punctuation
-            check_text = new_text if new_text else full_text
-            if ',' in check_text:
-                return True
-        
-        # Condition 3: 2 words or more and dot appears
-        if word_count >= 2:
-            # For non-final tokens, check only new text to avoid re-triggering on same punctuation
-            check_text = new_text if new_text else full_text
-            if '.' in check_text:
-                return True
-        
-        return False
+
     
-    def _should_flush_external_ws(self, token: dict) -> bool:
-        """Check if external WebSocket buffer should be flushed based on conditions"""
-        text = token.get("text") or ""
-        
-        # Condition 1: Line end (<end> token)
-        if text == "<end>":
-            return True
-        
-        with self._external_ws_buffer_lock:
-            # Count words in current token
-            word_count = self._count_words(text)
-            total_words = self._external_ws_word_count + word_count
-            
-            # Condition 2: 20 words or more
-            if total_words >= 20:
-                return True
-            
-            # Condition 3: 10 words or more and comma appears
-            if total_words >= 10 and ',' in text:
-                return True
-            
-            # Condition 4: 2 words or more and dot appears
-            if total_words >= 2 and '.' in text:
-                return True
-        
-        return False
+
     
-    def _flush_external_ws_segment(self, clear_non_final_on_line_break=False, clear_non_final_on_interval=False):
+    def _flush_external_ws_segment(self, clear_non_final=False):
         """Flush external WebSocket buffer and send text (final + non-final tokens)
         
         Args:
-            clear_non_final_on_line_break: If True, clear non-final tokens when line break condition is met
-            clear_non_final_on_interval: If True, clear non-final tokens when interval-based rate control triggers flush
+            clear_non_final: If True, clear non-final tokens when flushing
         """
         # Check if sending is enabled
         if not self.external_ws_send_enabled:
@@ -532,12 +472,12 @@ class SonioxSession:
             self._external_ws_word_count = 0
             # Clear translation tokens
             self._external_ws_translation_tokens.clear()
-            # Clear non-final tokens if line break condition is met or interval-based flush
-            if clear_non_final_on_line_break or clear_non_final_on_interval:
+            # Clear non-final tokens if requested
+            if clear_non_final:
                 self._external_ws_non_final_tokens.clear()
                 # Reset last flush non-final text to empty to prevent re-triggering on next token
                 non_final_text = ""
-            # Note: non-final tokens are kept for next update unless line break condition is met or interval-based flush
+            # Note: non-final tokens are kept for next update unless explicitly cleared
             
             # Update last flush state
             self._external_ws_last_flush_final_text = final_text
@@ -660,25 +600,13 @@ class SonioxSession:
             if not self._external_ws_tokens and not has_end_token:
                 # No tokens to send
                 return
-            
-            # Check conditions based on word count (used to determine whether to reset word_count)
-            should_reset_word_count = False
-            if self._external_ws_tokens:
-                combined_text = "".join([tok.get("text", "") for tok in self._external_ws_tokens])
-                should_reset_word_count = self._check_line_break_condition(
-                    self._external_ws_word_count,
-                    full_text=combined_text
-                )
-                
-                if should_reset_word_count:
-                    self._external_ws_word_count = 0
         
-        # Always deliver when final is confirmed (regardless of rate control)
+        # Always deliver when final is confirmed
         # If <end> token exists or final token exists, send all at once
-        # Clear non-final tokens when line break condition is met to prevent immediate re-triggering
         # Only flush if we have original tokens (not just translation tokens)
         if has_original_token or has_end_token:
-            self._flush_external_ws_segment(clear_non_final_on_line_break=should_reset_word_count)
+            # Clear non-final tokens when <end> token is detected to prevent carryover
+            self._flush_external_ws_segment(clear_non_final=has_end_token)
     
     def _handle_external_ws_non_final_tokens(self, non_final_tokens: list[dict]):
         """Handle non-final tokens for external WebSocket sending"""
@@ -703,74 +631,22 @@ class SonioxSession:
         
         # Update non-final tokens buffer and increment counter
         with self._external_ws_buffer_lock:
-            # Get previous non-final text for comparison
-            previous_non_final_text = "".join([tok.get("text", "") for tok in self._external_ws_non_final_tokens])
-            
             # Update non-final tokens buffer
             self._external_ws_non_final_tokens = filtered_tokens
             self._external_ws_non_final_token_count += 1
-            
-            # Get current state
-            current_final_text = "".join([tok.get("text", "") for tok in self._external_ws_tokens])
-            current_non_final_text = "".join([tok.get("text", "") for tok in self._external_ws_non_final_tokens])
-            
-            # Calculate newly added content since last flush
-            # Final tokens: current - last flushed (only newly added final tokens)
-            new_final_text = current_final_text[len(self._external_ws_last_flush_final_text):]
-            # Non-final tokens: check if current is different from last flushed
-            # If different, the new part is current - last flushed (but non-final is replaced entirely)
-            # So we check if current non-final contains new punctuation compared to last flushed
-            if current_non_final_text != self._external_ws_last_flush_non_final_text:
-                # Non-final was updated, check if it has new punctuation
-                # Compare with previous non-final to see if punctuation is new
-                new_non_final_text = current_non_final_text[len(previous_non_final_text):] if previous_non_final_text else current_non_final_text
-            else:
-                new_non_final_text = ""
-            
-            # Combine final and non-final tokens for condition checking
-            all_tokens = self._external_ws_tokens + self._external_ws_non_final_tokens
-            combined_text = "".join([tok.get("text", "") for tok in all_tokens])
-            # Use _external_ws_word_count for final tokens and calculate non-final tokens separately
-            # This ensures consistency with the word count tracking
-            non_final_word_count = sum([self._count_words(tok.get("text", "")) for tok in self._external_ws_non_final_tokens])
-            combined_word_count = self._external_ws_word_count + non_final_word_count
         
-        # Check conditions
+        # Check interval-based rate control only
         should_flush = False
-        line_break_met = False
-        reset_interval_counter = False
-        
-        # Check line break conditions using unified function
-        new_combined_text = new_final_text + new_non_final_text
-        line_break_met = self._check_line_break_condition(
-            combined_word_count,
-            full_text=combined_text,
-            new_text=new_combined_text
-        )
-        
-        if line_break_met:
+        if self._external_ws_non_final_token_count >= self.external_ws_non_final_send_interval:
             should_flush = True
-        # Check interval-based rate control (only if line break condition not met)
-        elif self._external_ws_non_final_token_count >= self.external_ws_non_final_send_interval:
-            should_flush = True
-            reset_interval_counter = True
         
-        # Flush if condition met
+        # Flush if interval condition met
         if should_flush:
             with self._external_ws_buffer_lock:
-                if line_break_met:
-                    # Reset interval counter when line break condition is met
-                    # Note: _external_ws_word_count will be reset in _flush_external_ws_segment
-                    self._external_ws_non_final_token_count = 0
-                elif reset_interval_counter:
-                    # Reset only interval counter for interval-based rate control
-                    self._external_ws_non_final_token_count = 0
-            # Clear non-final tokens when line break condition is met or interval-based flush to prevent immediate re-triggering
-            # _flush_external_ws_segment will reset _external_ws_word_count when clearing final tokens
-            self._flush_external_ws_segment(
-                clear_non_final_on_line_break=line_break_met,
-                clear_non_final_on_interval=reset_interval_counter
-            )
+                # Reset interval counter
+                self._external_ws_non_final_token_count = 0
+            # Clear non-final tokens for interval-based flush
+            self._flush_external_ws_segment(clear_non_final=True)
     
     def _run_session(
         self,
