@@ -200,6 +200,8 @@ let externalWsEnabled = false;
 let externalWsUri = 'ws://localhost:9039';  // Fixed URI, not configurable
 let externalWsSendEnabled = true;  // Enable sending transcription (default: on)
 let externalWsSendNonFinal = false;  // Also send text during transcription (default: off)
+let externalWsSendTranslation = false;  // Also send translations (default: off)
+let externalWsNonFinalSendInterval = 3;  // Interval for non-final token sending (default: 3)
 
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
@@ -2102,6 +2104,12 @@ async function fetchExternalWsSettings() {
       if (typeof data.send_non_final === 'boolean') {
         externalWsSendNonFinal = data.send_non_final;
       }
+      if (typeof data.send_translation === 'boolean') {
+        externalWsSendTranslation = data.send_translation;
+      }
+      if (typeof data.non_final_send_interval === 'number') {
+        externalWsNonFinalSendInterval = data.non_final_send_interval;
+      }
     }
   } catch (error) {
     console.error('Error fetching external WS settings:', error);
@@ -2153,16 +2161,71 @@ function ensureExternalWsPopover() {
   nonFinalCheckbox.type = 'checkbox';
   nonFinalCheckbox.id = 'externalWsSendNonFinal';
   nonFinalCheckbox.checked = externalWsSendNonFinal;
-  nonFinalCheckbox.addEventListener('change', async () => {
-    externalWsSendNonFinal = nonFinalCheckbox.checked;
-    await updateExternalWsSettings();
-  });
+  // Remove the existing change listener since we'll add a new one below
   const nonFinalText = document.createElement('span');
   nonFinalText.textContent = 'Also send text during transcription';
   nonFinalLabel.appendChild(nonFinalCheckbox);
   nonFinalLabel.appendChild(nonFinalText);
   nonFinalSection.appendChild(nonFinalLabel);
+
+  // Add interval slider (only shown when non-final is enabled)
+  const intervalSliderDiv = document.createElement('div');
+  intervalSliderDiv.className = 'external-ws-slider-section';
+  intervalSliderDiv.id = 'externalWsIntervalSlider';
+  intervalSliderDiv.style.marginTop = '8px';
+  intervalSliderDiv.style.display = externalWsSendNonFinal ? 'block' : 'none';
+
+  const intervalLabel = document.createElement('label');
+  intervalLabel.className = 'external-ws-slider-label';
+  intervalLabel.textContent = `Send every ${externalWsNonFinalSendInterval} tokens:`;
+
+  const intervalSlider = document.createElement('input');
+  intervalSlider.type = 'range';
+  intervalSlider.id = 'externalWsIntervalSliderInput';
+  intervalSlider.min = '2';
+  intervalSlider.max = '7';
+  intervalSlider.value = externalWsNonFinalSendInterval.toString();
+  intervalSlider.className = 'external-ws-slider';
+
+  intervalSlider.addEventListener('input', async (e) => {
+    const newInterval = parseInt(e.target.value);
+    externalWsNonFinalSendInterval = newInterval;
+    intervalLabel.textContent = `Send every ${newInterval} tokens:`;
+    await updateExternalWsSettings();
+  });
+
+  intervalSliderDiv.appendChild(intervalLabel);
+  intervalSliderDiv.appendChild(intervalSlider);
+  nonFinalSection.appendChild(intervalSliderDiv);
+
+  // Update slider visibility when checkbox changes
+  nonFinalCheckbox.addEventListener('change', async () => {
+    externalWsSendNonFinal = nonFinalCheckbox.checked;
+    intervalSliderDiv.style.display = externalWsSendNonFinal ? 'block' : 'none';
+    await updateExternalWsSettings();
+  });
+
   el.appendChild(nonFinalSection);
+
+  // Also send translations checkbox
+  const translationSection = document.createElement('div');
+  translationSection.className = 'external-ws-section';
+  const translationLabel = document.createElement('label');
+  translationLabel.className = 'external-ws-toggle-label';
+  const translationCheckbox = document.createElement('input');
+  translationCheckbox.type = 'checkbox';
+  translationCheckbox.id = 'externalWsSendTranslation';
+  translationCheckbox.checked = externalWsSendTranslation;
+  translationCheckbox.addEventListener('change', async () => {
+    externalWsSendTranslation = translationCheckbox.checked;
+    await updateExternalWsSettings();
+  });
+  const translationText = document.createElement('span');
+  translationText.textContent = 'Also send translations';
+  translationLabel.appendChild(translationCheckbox);
+  translationLabel.appendChild(translationText);
+  translationSection.appendChild(translationLabel);
+  el.appendChild(translationSection);
 
   document.body.appendChild(el);
   externalWsPopoverEl = el;
@@ -2175,11 +2238,28 @@ function updateExternalWsPopover() {
   }
   const enableCheckbox = externalWsPopoverEl.querySelector('#externalWsSendEnabled');
   const nonFinalCheckbox = externalWsPopoverEl.querySelector('#externalWsSendNonFinal');
+  const translationCheckbox = externalWsPopoverEl.querySelector('#externalWsSendTranslation');
+  const intervalSlider = externalWsPopoverEl.querySelector('#externalWsIntervalSliderInput');
+  const intervalLabel = externalWsPopoverEl.querySelector('.external-ws-slider-label');
+  const intervalDiv = externalWsPopoverEl.querySelector('#externalWsIntervalSlider');
+
   if (enableCheckbox) {
     enableCheckbox.checked = externalWsSendEnabled;
   }
   if (nonFinalCheckbox) {
     nonFinalCheckbox.checked = externalWsSendNonFinal;
+  }
+  if (translationCheckbox) {
+    translationCheckbox.checked = externalWsSendTranslation;
+  }
+  if (intervalSlider) {
+    intervalSlider.value = externalWsNonFinalSendInterval.toString();
+  }
+  if (intervalLabel) {
+    intervalLabel.textContent = `Send every ${externalWsNonFinalSendInterval} tokens:`;
+  }
+  if (intervalDiv) {
+    intervalDiv.style.display = externalWsSendNonFinal ? 'block' : 'none';
   }
   // Update URI in title
   const enableLabel = externalWsPopoverEl.querySelector('#externalWsSendEnabled').closest('label');
@@ -2268,7 +2348,9 @@ async function updateExternalWsSettings() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         send_enabled: externalWsSendEnabled,
-        send_non_final: externalWsSendNonFinal
+        send_non_final: externalWsSendNonFinal,
+        send_translation: externalWsSendTranslation,
+        non_final_send_interval: externalWsNonFinalSendInterval
       })
     });
 

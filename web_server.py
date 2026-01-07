@@ -73,6 +73,7 @@ class WebServer:
         self.external_ws_uri = EXTERNAL_WS_URI  # External WebSocket URI from config
         self.external_ws_send_enabled = True  # Enable sending transcription (default: on)
         self.external_ws_send_non_final = False  # Also send text during transcription (default: off)
+        self.external_ws_send_translation = False  # Also send translations (default: off)
 
     async def api_key_status_handler(self, request):
         """返回API Key状态"""
@@ -225,7 +226,8 @@ class WebServer:
         return web.json_response({
             "status": "ok",
             "send_enabled": self.external_ws_send_enabled,
-            "send_non_final": self.external_ws_send_non_final
+            "send_non_final": self.external_ws_send_non_final,
+            "send_translation": self.external_ws_send_translation
         })
     
     async def external_ws_settings_set_handler(self, request):
@@ -245,10 +247,23 @@ class WebServer:
             # Update soniox_session setting
             self.soniox_session.set_external_ws_send_non_final(self.external_ws_send_non_final)
         
+        if "send_translation" in payload:
+            self.external_ws_send_translation = bool(payload["send_translation"])
+            # Update soniox_session setting
+            self.soniox_session.set_external_ws_send_translation(self.external_ws_send_translation)
+        
+        if "non_final_send_interval" in payload:
+            try:
+                interval = int(payload["non_final_send_interval"])
+                self.soniox_session.set_external_ws_non_final_send_interval(interval)
+            except (ValueError, TypeError) as e:
+                return web.json_response({"status": "error", "message": str(e)}, status=400)
+        
         return web.json_response({
             "status": "ok",
             "send_enabled": self.external_ws_send_enabled,
-            "send_non_final": self.external_ws_send_non_final
+            "send_non_final": self.external_ws_send_non_final,
+            "send_translation": self.external_ws_send_translation
         })
     
     async def websocket_handler(self, request):
