@@ -252,6 +252,13 @@ class WebServer:
             # Update soniox_session setting
             self.soniox_session.set_external_ws_send_translation(self.external_ws_send_translation)
         
+        if "non_final_send_interval" in payload:
+            try:
+                interval = int(payload["non_final_send_interval"])
+                self.soniox_session.set_external_ws_non_final_send_interval(interval)
+            except (ValueError, TypeError) as e:
+                return web.json_response({"status": "error", "message": str(e)}, status=400)
+        
         return web.json_response({
             "status": "ok",
             "send_enabled": self.external_ws_send_enabled,
